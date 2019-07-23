@@ -1,10 +1,68 @@
 import tensorflow as tf
 from tensorflow.keras.layers import Layer
+from tensorflow.python.keras.metrics import MeanMetricWrapper
+
+################################################################################
+# BER metric
+################################################################################
+def bit_error_rate(y_true, y_pred):
+    # assumes bit input
+    y_true = tf.cast(y_true, tf.bool)
+    y_pred = tf.cast(y_pred, tf.bool)
+    errs = tf.cast(tf.not_equal(y_true, y_pred), tf.float32)
+    return tf.reduce_mean(errs, axis=-1)
+
+class BitErrorRate(MeanMetricWrapper):
+    '''
+    Based on Accuracy class in tf.keras.metric
+    '''
+    def __init__(self, name='BER', dtype=None):
+        super(BitErrorRate, self).__init__(bit_error_rate, name, dtype=dtype)
+
+'''
+class BinaryTruePositives(Metric):
+    def __init__(self, name='binary_true_positives', **kwargs):
+        super(BinaryTruePositives, self).__init__(name=name, **kwargs)
+        self.true_positives = self.add_weight(name='tp', initializer='zeros')
+    def update_state(self, y_true, y_pred, sample_weight=None):
+        y_true = tf.cast(y_true, tf.bool)
+        y_pred = tf.cast(y_pred, tf.bool)
+        values = tf.logical_and(tf.equal(y_true, True), tf.equal(y_pred, True))
+        values = tf.cast(values, self.dtype)
+        if sample_weight is not None:
+            sample_weight = tf.cast(sample_weight, self.dtype)
+            sample_weight = tf.broadcast_weights(sample_weight, values)
+            values = tf.multiply(values, sample_weight)
+            self.true_positives.assign_add(tf.reduce_sum(values))
+    def result(self):
+        return self.true_positives
+'''
 
 ################################################################################
 # define dense layer with constant input
 ################################################################################
-class CommSymDense(tf.keras.layers.Layer):
+
+'''
+class Linear(Layer):
+
+  def __init__(self, units=32):
+    super(Linear, self).__init__()
+    self.units = units
+
+  def build(self, input_shape):
+    self.w = self.add_weight(shape=(input_shape[-1], self.units),
+                             initializer='random_normal',
+                             trainable=True)
+    self.b = self.add_weight(shape=(self.units,),
+                             initializer='random_normal',
+                             trainable=True)
+
+  def call(self, inputs):
+    return tf.matmul(inputs, self.w) + self.b
+'''
+
+'''
+class CommSymDense(Layer):
     def __init__(self,
                units,
                syms,
@@ -77,5 +135,4 @@ class CommSymDense(tf.keras.layers.Layer):
         if self.activation is not None:
             return self.activation(outputs)  # pylint: disable=not-callable
         return outputs
-
-
+'''

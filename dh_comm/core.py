@@ -1,6 +1,4 @@
-# placeholder for all comm. related utilities for now
-# [TODO] add channel class
-# [DONE] move CommDataSource to CommLib
+# Essential communications components
 # [DONE] need to match matlab functions' behavior by default
 #  NOTE: matlab does not implement standard defined Gray coding
 #        commpy implements binary encoding
@@ -241,46 +239,61 @@ class Transmitter:
     '''
     Encapsulate all TX functions
     Support multi-stream processing
+    NOTE: check init-time pre-conditions below
     '''
 
     def __init__(self, p,
                  encoder = None,
-                 modulator = None
+                 modulator = None,
+                 training = False
                  ):
+
+        #NOTE: does not allow training and encoding
         assert(modulator)
+        assert( not(training == True and encoder) )
+
         self.p = p
         self.mod = modulator
         self.enc = encoder
+        self.training = training
 
-    def __call__(self):
-        return self.generate()
 
-    def generate(self):
+    def __call__(self, *args, **kwargs):
+        return self.generate(*args, **kwargs)
+
+    def generate(self, N=None):
         '''
         generate raw payload bits and symbols
-        NOTE: output bit vectors as list
-              easier to handle
+        NOTE: check runtime pre-conditions below
+        NOTE: return bit vectors as list easier to handle
         '''
         p = self.p
         mod = self.mod
         enc = self.enc
+        training = self.training
+
+        #NOTE: allow N only in training mode
+        assert( not(training == False and N != None) )
 
         # per stream processing
         ####################################
         if enc == None:
-            raw_bit_tsr = rnd.randint(2, size=(p.N_sts, p.N_syms, p.nbps))
+            N_raw = p.N_syms if N == None else N
+            #raw_bit_tsr = rnd.randint(2, size=(p.N_sts, p.N_syms, p.nbps))
+            raw_bit_tsr = rnd.randint(2, size=(p.N_sts, N_raw, p.nbps))
             bit_mat = raw_bit_tsr.reshape(p.N_sts, -1)
-            # return raw bits
+            raw_bits_list = list(bit_mat)
+            mapper_bits_list = raw_bits_list
         else:
             raw_bit_tsr = rnd.randint(2, size=(p.N_sts, p.N_raw, p.nbps))
             raw_bit_mat = raw_bit_tsr.reshape(p.N_sts, -1)
+            raw_bits_list = list(raw_bit_mat)
             # encode raw bits, produces N_sts codewords
-            bits_list = [ enc.encode(raw_bits) for raw_bits in list(raw_bit_mat) ]
-            bit_mat = np.array(bits_list)
-            bits_tsr = bit_mat.reshape(p.N_sts, p.N_syms, p.nbps)
+            encoded_bits_list = [ enc.encode(raw_bits) for raw_bits in raw_bits_list ]
+            mapper_bits_list = encoded_bits_list
 
         # map to symbols
-        syms_list = [ mod.map(bits) for bits in list(bit_mat) ]
+        syms_list = [ mod.map(bits) for bits in mapper_bits_list ]
         syms = np.array(syms_list)
 
         # convert to stacked matrix form
@@ -291,12 +304,23 @@ class Transmitter:
         # syms.shape = (N_sts, N_syms)
         syms_tr = syms.transpose()
         # syms_tr.shape = (N_syms, N_sts)
-        syms_tsr = syms_tr.reshape(p.N_syms, p.N_sts, 1)
+        N_syms = N if training else p.N_syms
+        #syms_tsr = syms_tr.reshape(p.N_syms, p.N_sts, 1)
+        syms_tsr = syms_tr.reshape(N_syms, p.N_sts, 1)
 
-        bits_mat = raw_bit_tsr.reshape(p.N_sts, -1)
-        bits_list = list(bits_mat)
+        # output processing
+        if training:
+            # reformat bits for training
+            # list(bit_str) = N_sts elements of shape (N, p.nbps)
+            bit_mat_trn = np.concatenate(list(raw_bit_tsr), axis=1)
+            # bit_mat_trn.shape = (N, N_sts * nbps)
+            bit_tsr_trn = bit_mat_trn.reshape(N, p.N_sts, p.nbps)
+            bits_output = bit_tsr_trn
+        else:
+            bits_output = raw_bits_list
 
-        return syms_tsr, bits_list
+        # return symbols, raw bits
+        return syms_tsr, bits_output
 
 
 class Receiver:
@@ -357,6 +381,10 @@ class Channel:
     def __init__(self, p):
         self.p = p
         self.ch_gen = partial(self.channels[p.ch_type], self)
+        self.n_gen = partial(self.noise_table[p.noise_type], self)
+
+        # log uniform for now
+        assert(p.noise_dist == 'log_uniform')
 
     def __call__(self, syms):
         return self.apply(syms)
@@ -365,7 +393,10 @@ class Channel:
     channel generation functions
     '''
     def gen_rayleigh_ch(self, N, N_tx, N_rx):
-        return crandn(N, N_tx, N_rx)
+        # assume square matrix
+        assert(N_tx == N_rx)
+        scale = 1 / np.sqrt(N_tx)
+        return scale * crandn(N, N_tx, N_rx)
 
     def gen_identity_ch(self, N, N_tx, N_rx):
         H = np.identity(N_tx).astype(complex)
@@ -377,22 +408,50 @@ class Channel:
         'rayleigh' : gen_rayleigh_ch
     }
 
+    '''
+    noise generation functions
+    '''
+    def gen_fixed_var(self, N, N_rx):
+        p = self.p
+        std_n_tsr = crandn(N, N_rx, 1)
+        n_tsr = p.n_std * std_n_tsr
+        n_var_tsr = p.n_var * np.ones((N,1,1))
+        return n_tsr, n_var_tsr
+
+    def gen_rand_var(self, N, N_rx):
+        p = self.p
+        snr_tsr_db = rnd.uniform(low=p.log_u_a, high=p.log_u_b, size=(N,1,1))
+        n_std_tsr = 10**(-snr_tsr_db/20)
+        n_var_tsr = n_std_tsr**2
+        std_n_tsr = crandn(N, N_rx, 1)
+        n_tsr = n_std_tsr * std_n_tsr
+        return n_tsr, n_var_tsr
+
+    # noise generation
+    noise_table = {
+        'fixed_var' : gen_fixed_var,
+        'rand_var' : gen_rand_var,
+    }
+
     def apply(self, syms_tsr):
         p = self.p
         ch_gen = self.ch_gen
+        n_gen = self.n_gen
 
-        # sym_tsr.shape = (N, N_rx, 1)
+        # sym_tsr.shape = (N, N_tx, 1)
         N = syms_tsr.shape[0]
         # generate channel realizations
         h_tsr = ch_gen(N, p.N_tx, p.N_rx)
-        # genrate noise vectors
-        n_tsr = crandn(N, p.N_rx, 1)
+        # genrate (scaled) noise vectors
+        n_tsr, n_var_tsr = n_gen(N, p.N_rx)
         # element-wise matrix multiplication via @
-        y_tsr = h_tsr @ syms_tsr + p.n_std * n_tsr
-        return y_tsr, h_tsr
+        y_tsr = h_tsr @ syms_tsr + n_tsr
+
+        return y_tsr, h_tsr, n_var_tsr
 
 
-class CommDataSource:
+# [FIXME] to be removed...
+class XCommDataSource:
     '''
     Generate data over a complex Gaussian channel
     Support multiple streams, N_tx < N_rx
@@ -406,77 +465,37 @@ class CommDataSource:
         # save parameters
         self.p = p
         self.mod = QAMModulator(p.M)
-        self.recv = Demodulator(p)
-        self.ch_gen = partial(self.channels[p.ch_type], self)
+        self.demod = Demodulator(p)
+        self.channel = Channel(p)
+        self.transmit = Transmitter(p, modulator=self.mod, training=True)
 
     def __repr__(self):
         return "Communication data source"
-
-    '''
-    channel generation functions
-    '''
-    def gen_rayleigh_ch(self, N, N_tx, N_rx):
-        return crandn(N, N_tx, N_rx)
-
-    def gen_identity_ch(self, N, N_tx, N_rx):
-        H = np.identity(N_tx).astype(complex)
-        return np.tile(H,(N,1)).reshape(N, N_tx, N_rx)
-
-    # channel selection
-    channels = {
-        'identity' : gen_identity_ch,
-        'rayleigh' : gen_rayleigh_ch
-    }
 
     def gen_channel_output(self, N):
         """ generate data for training """
         p = self.p
         mod = self.mod
-        ch_gen = self.ch_gen
+        transmit = self.transmit
+        channel = self.channel
 
-        # per stream processing
-        # NOTE: array.reshape(-1) flatten array into 1-dim
-        bit_tsr = rnd.randint(2, size=(p.N_sts, N, p.nbps))
-        # bit_mat.shape = (N_sts, N*nbps)
-        bit_mat = bit_tsr.reshape(p.N_sts, -1)
-        syms_list = [ mod.map(bits) for bits in list(bit_mat) ]
-        syms = np.array(syms_list)
+        # generate payload bits and symbols
+        syms_tsr, bit_tsr_trn = transmit(N)
+        # apply channel and noise
+        y_tsr, h_tsr, n_var_tsr = channel(syms_tsr)
 
-        # reformat bits for training
-        # list(bit_str) = N_sts elements of shape (N, p.nbps)
-        bit_mat_trn = np.concatenate(list(bit_tsr), axis=1)
-        # bit_mat_trn.shape = (N, N_sts * nbps)
-        bit_tsr_trn = bit_mat_trn.reshape(N, p.N_sts, p.nbps)
-
-        # convert to stacked matrix form
-        # for element-wise matrix multiplication using @
-        # i.e., the first dimension is turned into a list
-        #       containing elements in the remaining dimensions
-        # NOTE: a @ b <=> np.matmul(a,b)
-        # syms.shape = (N_sts, N)
-        syms_tr = syms.transpose()
-        # syms_tr.shape = (N, N_sts)
-        syms_tsr = syms_tr.reshape((N, p.N_sts, 1))
-        # generate channel realizations
-        h_tsr = ch_gen(N, p.N_tx, p.N_rx)
-        # genrate noise vectors
-        n_tsr = crandn(N, p.N_rx, 1)
-        # element-wise matrix multiplication via @
-        y_tsr = h_tsr @ syms_tsr + p.n_std * n_tsr
-
-        return bit_tsr_trn, h_tsr, y_tsr
+        return bit_tsr_trn, h_tsr, y_tsr, n_var_tsr
 
     def gen_receive_llrs(self, N):
         """
         compute exact llrs
         see Demodulator:compute_llrs()
         """
-        recv = self.recv
+        demod = self.demod
 
-        bit_tsr, h_tsr, y_tsr = self.gen_channel_output(N)
-
+        bit_tsr, h_tsr, y_tsr, n_var_tsr = self.gen_channel_output(N)
         bit_mat = bit_tsr.reshape(N,-1) # flatten tensor
-        lambda_mat = recv.compute_llrs(y_tsr, h_tsr, N)
+        lambda_mat = demod.compute_llrs(y_tsr, h_tsr, N)
 
         return bit_mat, lambda_mat
 
@@ -484,13 +503,13 @@ class CommDataSource:
         """
         return channel output and llrs
         """
-        recv = self.recv
+        demod = self.demod
 
-        bit_tsr, h_tsr, y_tsr = self.gen_channel_output(N)
+        bit_tsr, h_tsr, y_tsr, n_var_tsr = self.gen_channel_output(N)
 
-        lambda_mat = recv.compute_llrs(y_tsr, h_tsr, N)
+        lambda_mat = demod.compute_llrs(y_tsr, h_tsr, N)
 
-        return bit_tsr, h_tsr, y_tsr, lambda_mat
+        return bit_tsr, h_tsr, y_tsr, n_var_tsr, lambda_mat
 
     def get_const(self):
         """
@@ -571,7 +590,10 @@ class Demodulator:
                 bit_a = self.vpermute(bit_a, bit_b)
             return sym_a, bit_a
 
-    def compute_llrs(self, y_tsr, h_tsr, N=None, scaling=True):
+    def __call__(self, *args, **kwargs):
+        return self.compute_llrs(*args, **kwargs)
+
+    def compute_llrs(self, y_tsr, h_tsr, scaling=True):
         '''
         compute exact LLRs from compatible Y,H
         assume noise variance given in params
@@ -583,8 +605,7 @@ class Demodulator:
         p = self.p
         sym_sets_1 = self.sym_sets_1
         sym_sets_0 = self.sym_sets_0
-
-        if N == None: N = p.N_syms
+        N = y_tsr.shape[0]
 
         # exact llr computation
         ########################
