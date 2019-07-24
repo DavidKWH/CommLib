@@ -23,14 +23,20 @@ class MatlabProxy:
         self.eng = eng
 
     def __handler(self, *argv, **kwargs):
-        # supports arbitrary number of input arrays 
-        # and one output array
-        # NOTE: array.tolist() recurse into all dimensions
-        #       i.e., 2-dim array => 2-level nested list
+        '''
+        supports arbitrary number of input arrays and one output array
+        NOTE: input assumed to be numpy arrays
+        NOTE: 1d-arrays are converted to (N,1)-matrices
+              scalars are converted to (1,1)-matrices
+        NOTE: array.tolist() recurse into all dimensions
+              i.e., 2-dim array => 2-level nested list
+        '''
         array_args = []
         for arg in argv: 
             if np.isscalar(arg):
                 arg = np.array(arg).reshape(1,1)
+            if arg.ndim == 1:
+                arg = arg[:,np.newaxis]
             array_args.append( matlab.double(arg.tolist()) )
         result = getattr(self.eng, self.function_name)(*array_args, **kwargs)
         self.function_name = None

@@ -30,7 +30,7 @@ class BitErrorRate:
         K = self.K
 
         total = cnt * K
-        return np.array(errs / total)
+        return errs / total
 
 class Timer(object):
     ''' 
