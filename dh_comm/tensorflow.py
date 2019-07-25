@@ -61,7 +61,7 @@ class CommDataSet:
         # apply channel and noise
         y_tsr, h_tsr, n_var_tsr = channel(syms_tsr)
         # generate LLRs (test mode)
-        if test: lambda_mat = demod(y_tsr, h_tsr)
+        if test: lambda_mat = demod(y_tsr, h_tsr, n_var_tsr)
 
         # flatten dimensions i>1
         h_mat = h_tsr.reshape(N,-1)
@@ -79,7 +79,7 @@ class CommDataSet:
         if test: lambda_mat = tf.convert_to_tensor(
                                lambda_mat, dtype=tf.float32)
         # output processing
-        in_seq = (y_mat, h_mat, n_var_mat)
+        in_seq = [y_mat, h_mat, n_var_mat]
         return in_seq, out_mat, lambda_mat
 
     def get_const_input(self):
