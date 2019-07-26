@@ -4,7 +4,21 @@
 #include "stdbool.h"
 #include "stdint.h"
 
-#include "PM_11ad_R1_2.h"
+#if CODE_RATE == 1
+    #warning "R1/2 code selected for compilation"
+    #include "PM_11ad_R1_2.h"
+#elif CODE_RATE == 2
+    #warning "R5/8 code selected for compilation"
+    #include "PM_11ad_R5_8.h"
+#elif CODE_RATE == 3
+    #warning "R3/4 code selected for compilation"
+    #include "PM_11ad_R3_4.h"
+#elif CODE_RATE == 4
+    #warning "R13/16 code selected for compilation"
+    #include "PM_11ad_R13_16.h"
+#else
+    #error "Unsupported code rate"
+#endif
 
 typedef struct decoder decoder_t;
 decoder_t *new_decoder();

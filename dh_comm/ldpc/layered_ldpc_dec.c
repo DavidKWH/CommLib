@@ -40,16 +40,19 @@
 //# define USE_CNODE_FCN 1               // specify check node algorithm
 
 #if USE_CNODE_FCN == 1
-  #define USE_OFFSET_MIN
-  #define LLR_SUM llr_offset_min
+    #warning "using offset min-sum algorithm"
+    #define USE_OFFSET_MIN
+    #define LLR_SUM llr_offset_min
 #elif USE_CNODE_FCN == 2
-  #define USE_LLR_SUM_FAST
-  #define LLR_SUM llr_sum_fast
+    #warning "using fast BP algorithm"
+    #define USE_LLR_SUM_FAST
+    #define LLR_SUM llr_sum_fast
 #elif uSe_CNODE_FCN == 3
-  #define USE_LLR_SUM_RECURSE
-  #error "FIXME"
+    #warning "using recursive BP algorithm"
+    #define USE_LLR_SUM_RECURSE
+    #error "FIXME"
 #else
-  #error "Unkown check node function"
+    #error "Unkown check node function"
 #endif
 
 #define USE_EARLY_TERMINATION          // early termination (requires computing syndrome for each iteration)

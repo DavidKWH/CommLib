@@ -1,2 +1,2 @@
 # CommLib
-Library for physical layer (wireless) communication
+Library for physical layer (wireless) communications

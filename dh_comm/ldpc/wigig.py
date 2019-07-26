@@ -1,7 +1,37 @@
 
 import numpy as np
-# make LdpcDecoder visible
-from .ldpc_decoder_oms import *
+#np.set_printoptions(threshold=np.inf)
+#np.set_printoptions(threshold=False)
+
+class LdpcDecoder:
+    '''
+    Wrapper class for c-implementation
+    '''
+    def __init__(self, PM, pbeta=0.15, max_iter=24, early_term=1):
+        Z = 42
+        K = PM.shape[0]
+        nrows_blk = K//Z
+        self.impl = self.create_instance(nrows_blk, pbeta, max_iter, early_term)
+
+    def create_instance(self, nrows, pbeta, max_iter, flag):
+        if nrows == 8:
+            print('r1/2 decoder')
+            from ldpc_decoder_r1_2 import LdpcDecoder
+        elif nrows == 6:
+            print('r5/8 decoder')
+            from ldpc_decoder_r5_8 import LdpcDecoder
+        elif nrows == 4:
+            print('r3/4 decoder')
+            from ldpc_decoder_r3_4 import LdpcDecoder
+        elif nrows == 3:
+            print('r13/16 decoder')
+            from ldpc_decoder_r13_16 import LdpcDecoder
+        else:
+            assert('unsupported code rate')
+        return LdpcDecoder(pbeta, max_iter, flag)
+
+    def decode(self, llrs):
+        return self.impl.decode(llrs)
 
 class LdpcEncoder:
     ''' 
