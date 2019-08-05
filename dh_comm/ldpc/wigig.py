@@ -16,19 +16,19 @@ class LdpcDecoder:
     def create_instance(self, nrows, pbeta, max_iter, flag):
         if nrows == 8:
             print('r1/2 decoder')
-            from ldpc_decoder_r1_2 import LdpcDecoder
+            from .ldpc_decoder_r1_2 import LdpcDecoder as Impl
         elif nrows == 6:
             print('r5/8 decoder')
-            from ldpc_decoder_r5_8 import LdpcDecoder
+            from .ldpc_decoder_r5_8 import LdpcDecoder as Impl
         elif nrows == 4:
             print('r3/4 decoder')
-            from ldpc_decoder_r3_4 import LdpcDecoder
+            from .ldpc_decoder_r3_4 import LdpcDecoder as Impl
         elif nrows == 3:
             print('r13/16 decoder')
-            from ldpc_decoder_r13_16 import LdpcDecoder
+            from .ldpc_decoder_r13_16 import LdpcDecoder as Impl
         else:
             assert('unsupported code rate')
-        return LdpcDecoder(pbeta, max_iter, flag)
+        return Impl(pbeta, max_iter, flag)
 
     def decode(self, llrs):
         return self.impl.decode(llrs)

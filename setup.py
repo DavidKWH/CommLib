@@ -1,6 +1,7 @@
 from setuptools import setup, find_packages
 from setuptools.extension import Extension
 from Cython.Build import cythonize
+import numpy
 
 # define extension modules
 decoder_r1_2 = Extension('dh_comm.ldpc.ldpc_decoder_r1_2',
@@ -50,7 +51,7 @@ setup(name='dh_comm',
                         "Cython",
                         "importlib_resources ; python_version<'3.7'"],
       ext_modules = cythonize(extensions, language_level=3),
-
+      include_dirs=[numpy.get_include()],
       description='Physical layer communications package',
       author='David K. W. Ho',
       author_email='davidkwho@gmail.com',

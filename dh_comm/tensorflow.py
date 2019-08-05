@@ -22,6 +22,7 @@ class CommDataSet:
         self.demod = Demodulator(p)
         self.channel = Channel(p)
         self.transmit = Transmitter(p, modulator=self.mod, training=True)
+        self.in_transform = None
 
     def __repr__(self):
         return "Communication dataset iterable"
@@ -52,6 +53,7 @@ class CommDataSet:
         transmit = self.transmit
         channel = self.channel
         demod = self.demod
+        in_transform = self.in_transform
 
         lambda_mat = None
         N = p.batch_size
@@ -80,7 +82,13 @@ class CommDataSet:
                                lambda_mat, dtype=tf.float32)
         # output processing
         in_seq = [y_mat, h_mat, n_var_mat]
+        if in_transform: in_seq = in_transform(in_seq)
+
         return in_seq, out_mat, lambda_mat
+
+    def transform_input(self, transform_fn):
+        self.in_transform = transform_fn
+        return self
 
     def get_const_input(self):
         """ transform constellation for DNN training """
