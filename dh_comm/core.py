@@ -386,19 +386,25 @@ class Demodulator:
             quad_mat_1 = - l2_norm(y - hs_1)**2
             quad_mat_1 = np.squeeze(quad_mat_1, axis=2)
             qt_max_1 = np.amax(quad_mat_1, axis=1)
-            quad_mat_adj_1 = quad_mat_1 - qt_max_1[:,np.newaxis]
-            exp_mat_adj_1 = np.exp( scale * quad_mat_adj_1 )
-            sum_exp_adj_1 = np.sum(exp_mat_adj_1, axis=1);
-            log_sum_exp_1 = scale * qt_max_1 + np.log(sum_exp_adj_1);
+            if True: # FIXME: hack
+                quad_mat_adj_1 = quad_mat_1 - qt_max_1[:,np.newaxis]
+                exp_mat_adj_1 = np.exp( scale * quad_mat_adj_1 )
+                sum_exp_adj_1 = np.sum(exp_mat_adj_1, axis=1)
+                log_sum_exp_1 = scale * qt_max_1 + np.log(sum_exp_adj_1)
+            else:
+                log_sum_exp_1 = scale * qt_max_1
 
             hs_0 = h_tsr_ex @ syms_0_ex
             quad_mat_0 = - l2_norm(y - hs_0)**2
             quad_mat_0 = np.squeeze(quad_mat_0, axis=2)
             qt_max_0 = np.amax(quad_mat_0, axis=1)
-            quad_mat_adj_0 = quad_mat_0 - qt_max_0[:,np.newaxis]
-            exp_mat_adj_0 = np.exp( scale * quad_mat_adj_0 )
-            sum_exp_adj_0 = np.sum(exp_mat_adj_0, axis=1);
-            log_sum_exp_0 = scale * qt_max_0 + np.log(sum_exp_adj_0);
+            if True: # FIXME: hack
+                quad_mat_adj_0 = quad_mat_0 - qt_max_0[:,np.newaxis]
+                exp_mat_adj_0 = np.exp( scale * quad_mat_adj_0 )
+                sum_exp_adj_0 = np.sum(exp_mat_adj_0, axis=1)
+                log_sum_exp_0 = scale * qt_max_0 + np.log(sum_exp_adj_0)
+            else:
+                log_sum_exp_0 = scale * qt_max_0
 
             lambda_vec = log_sum_exp_0 - log_sum_exp_1;
 
