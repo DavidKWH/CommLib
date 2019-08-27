@@ -13,13 +13,18 @@ class CommDataSet:
     Iterable Wrapper for Tensorflow model training
     '''
 
-    def __init__(self, p, test=False):
+    def __init__(self, p, llr_output=False,
+                          maxlog_approx=False,
+                          test=False):
         self.p = p
         self.n_iter = p.n_test_steps if test else p.n_train_steps
+        self.maxlog_approx = maxlog_approx
+        self.llr_output = llr_output
         self.test = test
         # comm. components
         self.mod = QAMModulator(p.M)
-        self.demod = Demodulator(p)
+        self.demod = Demodulator(p, modulator=self.mod,
+                                    maxlog_approx=maxlog_approx)
         self.channel = Channel(p)
         self.transmit = Transmitter(p, modulator=self.mod, training=True)
         self.in_transform = None
@@ -49,6 +54,7 @@ class CommDataSet:
         '''
         p = self.p
         test = self.test
+        llr_output = self.llr_output or self.test
         mod = self.mod
         transmit = self.transmit
         channel = self.channel
@@ -63,7 +69,7 @@ class CommDataSet:
         # apply channel and noise
         y_tsr, h_tsr, n_var_tsr = channel(syms_tsr)
         # generate LLRs (test mode)
-        if test: lambda_mat = demod(y_tsr, h_tsr, n_var_tsr)
+        if llr_output: lambda_mat = demod(y_tsr, h_tsr, n_var_tsr)
 
         # flatten dimensions i>1
         h_mat = h_tsr.reshape(N,-1)
@@ -78,7 +84,7 @@ class CommDataSet:
         y_mat = tf.convert_to_tensor(y_mat, dtype=tf.float32)
         n_var_mat = tf.convert_to_tensor(n_var_mat, dtype=tf.float32)
         out_mat = tf.convert_to_tensor(out_mat, dtype=tf.bool)
-        if test: lambda_mat = tf.convert_to_tensor(
+        if llr_output: lambda_mat = tf.convert_to_tensor(
                                lambda_mat, dtype=tf.float32)
         # output processing
         in_seq = [y_mat, h_mat, n_var_mat]

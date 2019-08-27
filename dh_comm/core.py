@@ -218,6 +218,24 @@ class Channel:
     '''
     channel generation functions
     '''
+    def gen_ch_from_sv_dist(self, N, N_tx, N_rx):
+        # generate matrices with specific sv distribution for DNN training
+        assert(N_tx == N_rx)
+        from scipy.stats import unitary_group
+        p = self.p
+
+        # generate random sv's
+        sv_mat = rnd.uniform(low=p.u_a, high=p.u_b, size=(N,N_tx))
+        # generate random unitary matrices
+        U_tsr = unitary_group.rvs(dim=N_tx, size=N)
+        V_tsr = unitary_group.rvs(dim=N_tx, size=N)
+        S_list = [np.diag(sv) for sv in list(sv_mat)]
+        S_tsr = np.array(S_list)
+
+        H = U_tsr @ S_tsr @ V_tsr
+
+        return H
+
     def gen_rayleigh_ch(self, N, N_tx, N_rx):
         # assume square matrix
         assert(N_tx == N_rx)
@@ -230,8 +248,9 @@ class Channel:
 
     # channel selection
     channels = {
+        'sv_dist'  : gen_ch_from_sv_dist,
         'identity' : gen_identity_ch,
-        'rayleigh' : gen_rayleigh_ch
+        'rayleigh' : gen_rayleigh_ch,
     }
 
     '''
@@ -284,8 +303,10 @@ class Demodulator:
 
     def __init__(self, p,
                  modulator = None,
+                 maxlog_approx = False
                  ):
         self.p = p
+        self.maxlog_approx = maxlog_approx
         if modulator:
             self.mod = modulator
         else:
@@ -359,6 +380,7 @@ class Demodulator:
               performance.
         '''
         p = self.p
+        exact_llr = not self.maxlog_approx
         sym_sets_1 = self.sym_sets_1
         sym_sets_0 = self.sym_sets_0
         N = y_tsr.shape[0]
@@ -386,7 +408,7 @@ class Demodulator:
             quad_mat_1 = - l2_norm(y - hs_1)**2
             quad_mat_1 = np.squeeze(quad_mat_1, axis=2)
             qt_max_1 = np.amax(quad_mat_1, axis=1)
-            if True: # FIXME: hack
+            if exact_llr:
                 quad_mat_adj_1 = quad_mat_1 - qt_max_1[:,np.newaxis]
                 exp_mat_adj_1 = np.exp( scale * quad_mat_adj_1 )
                 sum_exp_adj_1 = np.sum(exp_mat_adj_1, axis=1)
@@ -398,7 +420,7 @@ class Demodulator:
             quad_mat_0 = - l2_norm(y - hs_0)**2
             quad_mat_0 = np.squeeze(quad_mat_0, axis=2)
             qt_max_0 = np.amax(quad_mat_0, axis=1)
-            if True: # FIXME: hack
+            if exact_llr:
                 quad_mat_adj_0 = quad_mat_0 - qt_max_0[:,np.newaxis]
                 exp_mat_adj_0 = np.exp( scale * quad_mat_adj_0 )
                 sum_exp_adj_0 = np.sum(exp_mat_adj_0, axis=1)
