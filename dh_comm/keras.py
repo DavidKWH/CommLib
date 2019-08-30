@@ -1,12 +1,17 @@
 import tensorflow as tf
+# metric specific
+from tensorflow.python.keras.metrics import MeanMetricWrapper
+# schedule specific
+from tensorflow.keras.optimizers.schedules import LearningRateSchedule
+# layer specific
 from tensorflow.keras.layers import Layer
 from tensorflow.keras.layers import Dense
 from tensorflow.keras.layers import BatchNormalization
-from tensorflow.python.keras.metrics import MeanMetricWrapper
+# misc.
 from functools import partial
 
 ################################################################################
-# BER metric
+# Custom Metrics
 ################################################################################
 def bit_error_rate(y_true, y_pred):
     # assumes bit input
@@ -23,11 +28,105 @@ class BitErrorRate(MeanMetricWrapper):
         super(BitErrorRate, self).__init__(bit_error_rate, name, dtype=dtype)
 
 ################################################################################
+# Custom Schedules
+################################################################################
+class MomentumSchedule(LearningRateSchedule):
+    '''
+    Implements momentum schedule in (Sutskever et al., 2013)
+    '''
+    def __init__(self,
+            initial_momentum=0.5,
+            maximum_momentum=0.995,
+            final_momentum=0.9,
+            decay_steps=5000,
+            staircase=True,
+            name=None):
+        super(MomentumScedule, self).__init__()
+
+        self.initial_momentum = initial_momentum
+        self.maximum_momentum = maximum_momentum
+        self.final_momentum = final_momentum
+        self.decay_steps = decay_steps
+        self.staircase = staircase
+        self.final_iteration = False;
+        self.base = 1. - initial_momentum
+        self.name = name
+
+    def __call__(self, step):
+        with tf.name_scope(self.name or 'MomentumSchedule') as name:
+            initial_momentum = tf.convert_to_tensor( self.initial_momentum )
+            dtype = initial_momentum.dtype
+            maximum_momentum = tf.cast( self.maximum_momentum, dtype)
+            final_momentum = tf.cast( self.final_momentum, dtype)
+            decay_steps = tf.cast( self.decay_steps, dtype)
+            base = tf.cast( self.base, dtype)
+            global_step = tf.cast(step, dtype)
+
+        if self.final_iteration:
+            return final_momentum
+        p = global_step / decay_steps
+        if self.staircase:
+            p = tf.math.floor(p)
+        # compute momentum term
+        proposed = 1.0 - base / (p + 1)
+        return tf.math.minimum( proposed , self.maximum_momentum )
+
+    def final_iteration(self):
+        self.final_iteration = True
+
+    def get_config(self):
+        # FIXME
+        return {}
+
+class LRDecaySchedule(LearningRateSchedule):
+    '''
+    Implements learning rate scdedule
+    Based on exponential decay scheme used in (He et al., 2016)
+    '''
+
+    def __init__(self,
+            initial_learning_rate = 0.1,
+            minimum_learning_rate = 1e-4,
+            decay_steps = 5000,
+            decay_rate = 0.1,
+            staircase = False,
+            name = None
+            ):
+        super(LRDecaySchedule, self).__init__()
+        self.initial_learning_rate = initial_learning_rate
+        self.minimum_learning_rate = minimum_learning_rate
+        self.decay_steps = decay_steps
+        self.decay_rate = decay_rate
+        self.staircase = staircase
+        self.name = name
+
+    def __call__(self, step):
+        with tf.name_scope(self.name or'LRDecaySchedule') as name:
+            initial_lr = tf.convert_to_tensor( self.initial_learning_rate )
+            dtype = initial_lr.dtype
+            minimum_lr = tf.cast(self.minimum_learning_rate, dtype)
+            decay_steps = tf.cast(self.decay_steps, dtype)
+            decay_rate = tf.cast(self.decay_rate, dtype)
+            global_step = tf.cast(step, dtype)
+
+            p = global_step / decay_steps
+            if self.staircase:
+                p = tf.math.floor(p)
+            # compute exponential decay
+            proposed = initial_lr * tf.math.pow(decay_rate, p)
+            #print('step {} proposed {}'.format(step, proposed))
+            return tf.math.maximum( minimum_lr, proposed )
+
+    def get_config(self):
+        # FIXME
+        return {}
+
+################################################################################
 # Custom Layers
 ################################################################################
 class BatchNormedDense(Layer):
     '''
-    Implements batch normalized dense layer (Ioffe, Szegedy, 2015)
+    Implements batch normalized dense layer (Ioffe and Szegedy, 2015)
     '''
     def __init__(self, units,
                        activation=None,
