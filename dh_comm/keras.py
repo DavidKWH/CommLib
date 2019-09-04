@@ -7,6 +7,8 @@ from tensorflow.keras.optimizers.schedules import LearningRateSchedule
 from tensorflow.keras.layers import Layer
 from tensorflow.keras.layers import Dense
 from tensorflow.keras.layers import BatchNormalization
+from tensorflow.keras import activations
+#from tensorflow.keras import initializers
 # misc.
 from functools import partial
 
@@ -30,29 +32,44 @@ class BitErrorRate(MeanMetricWrapper):
 ################################################################################
 # Custom Schedules
 ################################################################################
-class MomentumSchedule(LearningRateSchedule):
+class MomentumSchedule:
     '''
     Implements momentum schedule in (Sutskever et al., 2013)
+
+    NOTE: Always perform staircase updates
+
+    NOTE: The step context is not passed to momentum callables.
+          Have to manage step counter in the training loop manually
+          by calling the update() method
+
+    TODO: Will this 'synchronized' update cause a runtime penalty?
+          This update requires a lock to the MT data structure.
     '''
     def __init__(self,
             initial_momentum=0.5,
             maximum_momentum=0.995,
             final_momentum=0.9,
-            decay_steps=5000,
-            staircase=True,
+            decay_steps=250,
+            #staircase=True,
             name=None):
-        super(MomentumScedule, self).__init__()
+        super(MomentumSchedule, self).__init__()
 
         self.initial_momentum = initial_momentum
         self.maximum_momentum = maximum_momentum
         self.final_momentum = final_momentum
         self.decay_steps = decay_steps
-        self.staircase = staircase
+        #self.staircase = staircase
         self.final_iteration = False;
         self.base = 1. - initial_momentum
         self.name = name
+        self.step = 0
 
-    def __call__(self, step):
+    def update(self):
+        # must be called synchronized
+        self.step += 1
+
+    def __call__(self):
+        step = self.step
         with tf.name_scope(self.name or 'MomentumSchedule') as name:
             initial_momentum = tf.convert_to_tensor( self.initial_momentum )
             dtype = initial_momentum.dtype
@@ -62,14 +79,14 @@ class MomentumSchedule(LearningRateSchedule):
             base = tf.cast( self.base, dtype)
             global_step = tf.cast(step, dtype)
 
-        if self.final_iteration:
-            return final_momentum
-        p = global_step / decay_steps
-        if self.staircase:
+            if self.final_iteration:
+                return final_momentum
+            p = global_step / decay_steps
+            #if self.staircase:
             p = tf.math.floor(p)
-        # compute momentum term
-        proposed = 1.0 - base / (p + 1)
-        return tf.math.minimum( proposed , self.maximum_momentum )
+            # compute momentum term
+            proposed = 1.0 - base / (p + 1)
+            return tf.math.minimum( proposed , self.maximum_momentum )
 
     def final_iteration(self):
         self.final_iteration = True
@@ -80,40 +97,87 @@ class MomentumSchedule(LearningRateSchedule):
 
 class LRDecaySchedule(LearningRateSchedule):
     '''
-    Implements learning rate scdedule
+    Base class for periodic and aperiodic schedules
+    '''
+    def __init__(self):
+        super(LRDecaySchedule, self).__init__()
+
+    '''
+    decay algorithms
+    '''
+    def power_based_decay(self, p):
+        return tf.math.pow(self.decay_rate, p)
+
+    def log_based_decay(self, p):
+        return tf.math.pow(10., -p*self.decay_exp)
+
+    # decay algo lookup
+    decay_algos = {
+        'power_based' : power_based_decay,
+        'log_based'   : log_based_decay,
+    }
+
+class PeriodicLRDecaySchedule(LRDecaySchedule):
+    '''
+    Implements (periodic) learning rate schedule
     Based on exponential decay scheme used in (He et al., 2016)
+
+    NOTE: Always perform staircase updates
+
+    NOTE: The decay schedule exploits the homogeneous floating point
+          pipeline available in GPU/TPU based hardware, e.g simple
+          parallelizable unconditional scalar computations.  Thus,
+          cannot assume integer/conditional logic is more efficient,
+          as this is highly dependent on the available hardware.
+
+    NOTE: Prefer parallelizable computation
+    NOTE: No integer nodes available in graph computation
+
+    decay_rate_dbp: decay in dB power
+                    e.g. (10, 20, 30) dBP = (10x, 100x, 1000x)
+                         (3, 6, 9) dBP = (2x, 4x, 8x)
     '''
 
     def __init__(self,
             initial_learning_rate = 0.1,
             minimum_learning_rate = 1e-4,
             decay_steps = 5000,
-            decay_rate = 0.1,
-            staircase = False,
+            decay_rate = None,
+            decay_rate_dbp = 10,
+            #staircase = True,
             name = None
             ):
-        super(LRDecaySchedule, self).__init__()
-        self.initial_learning_rate = initial_learning_rate
-        self.minimum_learning_rate = minimum_learning_rate
-        self.decay_steps = decay_steps
-        self.decay_rate = decay_rate
-        self.staircase = staircase
+        super(PeriodicLRDecaySchedule, self).__init__()
+        to_tensor = partial( tf.convert_to_tensor, dtype=tf.float32 )
+        self.initial_learning_rate = to_tensor(initial_learning_rate)
+        self.minimum_learning_rate = to_tensor(minimum_learning_rate)
+        self.decay_steps = to_tensor(decay_steps)
+        self.decay_rate = to_tensor(decay_rate) if decay_rate is not None else None
+        self.decay_exp = to_tensor(decay_rate_dbp / 10)
+        #self.staircase = staircase
         self.name = name
+        assert(decay_rate or decay_rate_dbp)
+        decay_mode = 'power_based' if decay_rate is not None else 'log_based'
+        self.decay_fn = partial(self.decay_algos[decay_mode], self)
 
     def __call__(self, step):
+        '''
+        NOTE: Only an instance of LearningRateSchedule is passed
+              the current step during training
+        '''
         with tf.name_scope(self.name or'LRDecaySchedule') as name:
-            initial_lr = tf.convert_to_tensor( self.initial_learning_rate )
-            dtype = initial_lr.dtype
-            minimum_lr = tf.cast(self.minimum_learning_rate, dtype)
-            decay_steps = tf.cast(self.decay_steps, dtype)
-            decay_rate = tf.cast(self.decay_rate, dtype)
-            global_step = tf.cast(step, dtype)
+            initial_lr = self.initial_learning_rate
+            minimum_lr = self.minimum_learning_rate
+            decay_steps = self.decay_steps
+            global_step = tf.cast(step, decay_steps.dtype)
 
             p = global_step / decay_steps
-            if self.staircase:
-                p = tf.math.floor(p)
+            #if self.staircase:
+            #    p = tf.math.floor(p)
+            p = tf.math.floor(p)
             # compute exponential decay
-            proposed = initial_lr * tf.math.pow(decay_rate, p)
+            decay_factor = self.decay_fn(p)
+            proposed = initial_lr * decay_factor
             #print('step {} proposed {}'.format(step, proposed))
             return tf.math.maximum( minimum_lr, proposed )
 
@@ -121,31 +185,112 @@ class LRDecaySchedule(LearningRateSchedule):
         # FIXME
         return {}
 
+class AperiodicLRDecaySchedule(LRDecaySchedule):
+    '''
+    Implements explicit absolute decay schedule in epochs
+
+    decay_schedule: decay schedule specified via
+                    zero-based indexing, e.g.
+                    (0,1,2,...) = (1st, 2nd, 3rd) epoch
+                    Thus, 0 is the starting epoch, should
+                    not be in a typical decay_schedule.
+    '''
+    def __init__(self,
+            initial_learning_rate = 0.1,
+            minimum_learning_rate = 1e-4,
+            #decay_steps = 5000,
+            steps_per_epoch = 5000,
+            decay_rate = None,
+            decay_rate_dbp = 10,
+            decay_schedule = [], # zero-based indexing
+            #staircase = True,
+            name = None
+            ):
+        super(AperiodicLRDecaySchedule, self).__init__()
+        assert(decay_schedule)
+        assert(decay_rate or decay_rate_dbp)
+        to_tensor = partial( tf.convert_to_tensor, dtype=tf.float32 )
+
+        self.initial_learning_rate = to_tensor(initial_learning_rate)
+        self.minimum_learning_rate = to_tensor(minimum_learning_rate)
+        self.steps_per_epoch = to_tensor(steps_per_epoch)
+        self.decay_rate = to_tensor(decay_rate) if decay_rate is not None else None
+        self.decay_exp = to_tensor(decay_rate_dbp / 10)
+        self.decay_schedule = to_tensor(decay_schedule)
+        #self.staircase = staircase
+        self.name = name
+        decay_mode = 'power_based' if decay_rate is not None else 'log_based'
+        self.decay_fn = partial(self.decay_algos[decay_mode], self)
+
+    def __call__(self, step):
+        '''
+        NOTE: Keep function stateless! Better parallelism
+
+        NOTE: Only an instance of LearningRateSchedule is passed
+              the current step during training
+        '''
+        with tf.name_scope(self.name or'AperiodicLRDecaySchedule') as name:
+            initial_lr = self.initial_learning_rate
+            minimum_lr = self.minimum_learning_rate
+            steps_per_epoch = self.steps_per_epoch
+            global_step = tf.cast(step, steps_per_epoch.dtype)
+            decay_schedule = self.decay_schedule
+
+            # compute exponent (use integer arithmetic)
+            pr = global_step / steps_per_epoch
+            pi  = tf.math.floor(pr)
+            # tf.math.greater_equal returns bools
+            ge_vec = (pi >= decay_schedule)
+            ge_vec = tf.cast( ge_vec, tf.float32 )
+            p = tf.reduce_sum(ge_vec)
+
+            # compute exponential decay
+            decay_factor = self.decay_fn(p)
+            proposed = initial_lr * decay_factor
+            #print('decay_sch {} ge_vec {}'.format(decay_schedule, ge_vec))
+            #print('step {} p {} proposed {}'.format(step, p, proposed))
+            return tf.math.maximum( minimum_lr, proposed )
+
+    def get_config(self):
+        # FIXME
+        return {}
+    pass
+
 ################################################################################
 # Custom Layers
 ################################################################################
-class BatchNormedDense(Layer):
+class HyperDense(Layer):
     '''
     Implements batch normalized dense layer (Ioffe and Szegedy, 2015)
+    Enable via the batch_normalization option
+
+    NOTE: The subclassed layer's name is inferred from the class name.
+    NOTE: The Layer class produce the correct context (i.e. name scope)
+          No special handling required
     '''
     def __init__(self, units,
                        activation=None,
-                       kernel_initializer=None):
-        super(BatchNormedDense, self).__init__()
+                       kernel_initializer=None,
+                       batch_normalization=False):
+        super(HyperDense, self).__init__()
 
+        batch_norm = batch_normalization
+        use_bias = not batch_normalization
         dense_linear_layer = partial(Dense, activation=None,
-                                            use_bias=False,
+                                            use_bias=use_bias,
                                             kernel_initializer=kernel_initializer)
         batch_norm_layer = BatchNormalization
 
-        self.d_layer = dense_linear_layer(units)
-        self.bn_layer = batch_norm_layer()
-        self.activation = activation
+        self.dl_layer = dense_linear_layer(units)
+        self.bn_layer = batch_norm_layer() if batch_norm else None
+        self.activation = activations.get(activation)
+        self.batch_norm = batch_norm
 
     def call(self, inputs, training=False):
         x = inputs
-        x = self.d_layer(x)
-        x = self.bn_layer(x, training=training)
+        x = self.dl_layer(x)
+        if self.batch_norm:
+            x = self.bn_layer(x, training=training)
         if self.activation is not None:
             return self.activation(x)
         return x
@@ -177,12 +322,12 @@ class Residual(Layer):
                                             kernel_initializer=kernel_initializer)
         batch_norm_layer = BatchNormalization
 
-        self.res_layer_1 = dense_linear_layer(units)
-        self.res_layer_2 = dense_linear_layer(units)
+        self.dl_layer_1 = dense_linear_layer(units)
+        self.dl_layer_2 = dense_linear_layer(units)
         self.bn_layer_1 = batch_norm_layer() if batch_norm else None
         self.bn_layer_2 = batch_norm_layer() if batch_norm else None
 
-        self.activation = activation
+        self.activation = activations.get(activation)
         self.batch_norm = batch_norm
         self.unmatched_dims = unmatched_dimensions
         self.initializer = kernel_initializer
@@ -191,7 +336,7 @@ class Residual(Layer):
     def build(self, input_shape):
         if self.unmatched_dims:
             assert( input_shape[-1] != self.units )
-            self.w = self.add_weight(name='w', # needed for tf.saved_model.save()
+            self.w = self.add_weight(name='W', # needed for tf.saved_model.save()
                                     shape=(input_shape[-1], self.units),
                                     initializer=self.initializer,
                                     trainable=True)
@@ -203,10 +348,10 @@ class Residual(Layer):
     def call(self, inputs, training=False):
         batch_norm = self.batch_norm
         x = inputs
-        x = self.res_layer_1(x)
+        x = self.dl_layer_1(x)
         if batch_norm: x = self.bn_layer_1(x, training=training)
         x = self.activation(x)
-        x = self.res_layer_2(x)
+        x = self.dl_layer_2(x)
         if batch_norm: x = self.bn_layer_2(x, training=training)
         x = x + self.transform(inputs)
         return self.activation(x)
@@ -259,6 +404,35 @@ class MaxOut(Layer):
         x = tf.math.multiply(inputs[:,:,None] , gi[None,:,:])
         out = tf.math.reduce_max(x, axis=2)
         return out
+
+################################################################################
+# Old stuff
+################################################################################
+#class BatchNormedDense(Layer):
+#    '''
+#    Implements batch normalized dense layer (Ioffe and Szegedy, 2015)
+#    '''
+#    def __init__(self, units,
+#                       activation=None,
+#                       kernel_initializer=None):
+#        super(BatchNormedDense, self).__init__()
+#
+#        dense_linear_layer = partial(Dense, activation=None,
+#                                            use_bias=False,
+#                                            kernel_initializer=kernel_initializer)
+#        batch_norm_layer = BatchNormalization
+#
+#        self.d_layer = dense_linear_layer(units)
+#        self.bn_layer = batch_norm_layer()
+#        self.activation = activation
+#
+#    def call(self, inputs, training=False):
+#        x = inputs
+#        x = self.d_layer(x)
+#        x = self.bn_layer(x, training=training)
+#        if self.activation is not None:
+#            return self.activation(x)
+#        return x
 
 ################################################################################
 # Examples
