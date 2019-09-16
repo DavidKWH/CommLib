@@ -15,19 +15,23 @@ class CommDataSet:
 
     def __init__(self, p, llr_output=False,
                           maxlog_approx=False,
-                          test=False):
+                          mode='none',
+                          test=False,
+                          transform=None):
+        assert( hasattr(p,mode) )
         self.p = p
         self.n_iter = p.n_test_steps if test else p.n_train_steps
         self.maxlog_approx = maxlog_approx
         self.llr_output = llr_output
         self.test = test
+        self.mode = mode
         # comm. components
         self.mod = QAMModulator(p.M)
         self.demod = Demodulator(p, modulator=self.mod,
                                     maxlog_approx=maxlog_approx)
-        self.channel = Channel(p)
+        self.channel = Channel(p, mode)
         self.transmit = Transmitter(p, modulator=self.mod, training=True)
-        self.in_transform = None
+        self.in_transform = transform
 
     def __repr__(self):
         return "Communication dataset iterable"
@@ -111,8 +115,9 @@ class DnnDemod:
 
     def __init__(self, p):
         self.p = p
-        print('loading model from file:', p.m_file)
-        self.model = tf.saved_model.load(p.m_file)
+        fname = '/'.join((p.m_dir, p.m_file))
+        print('loading model from file:', fname)
+        self.model = tf.saved_model.load(fname)
 
     def __call__(self, *args, **kwargs):
         return self.compute_llrs(*args, **kwargs)

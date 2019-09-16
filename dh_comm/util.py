@@ -2,6 +2,17 @@ from time import time, perf_counter
 from datetime import timedelta
 from math import log10, ceil
 
+################################################################################
+# utility functions
+################################################################################
+
+#def get_key(string, delimiter=',', index=0):
+#    return string.split(delimiter)[index]
+
+################################################################################
+# uncategorized classes
+################################################################################
+
 class BitErrorRate:
     '''
     Implement the BER metric

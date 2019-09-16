@@ -1,25 +1,33 @@
 #!/usr/bin/env python
 #
 # rclone copy tool (python executable)
+import os
 
 REMOTE_NAME = 'gdrive'
 ROOT_DIR = 'workspace'
 RCLONE_CMD = 'rclone'
 MAX_AGE = '5d'
 DEBUG_EN = False
+MY_HOME = os.environ['HOME']
+RCLONE_FILTER = MY_HOME + '/workspace/rclone/rclone_filter.txt'
+
+# base command
+# TODO: consider using +=, equivalent to list.extend()
+#cmd_list = [RCLONE_CMD]
+#cmd_list += ['-v'] # verbose
 
 # copy options
 # -v verbose
 # -l preserve symlinks
 # -u update mode, skip newer files
 # --max-age 5d, only prcess files that are aged 5 days or newer
-copy_cmd_list = [RCLONE_CMD, '-v', '-l', '-u', '--max-age', MAX_AGE, 'copy']
+copy_cmd_list = [RCLONE_CMD, '-v', '-l', '-u', '--max-age', MAX_AGE, '--dump', 'filters', '--filter-from', RCLONE_FILTER, 'copy']
 # sync options
 # -P show progress
 # -l preserve symlinks
 # NOTE: consider doing a dry run with --dry-run flag as 
 #       this operation is destructive to destination
-sync_cmd_list = [RCLONE_CMD, '-P', '-l', 'sync']
+sync_cmd_list = [RCLONE_CMD, '-P', '-l', '--dump', 'filters', '--filter-from', RCLONE_FILTER, 'sync']
 
 if __name__ =="__main__":
     import sys 

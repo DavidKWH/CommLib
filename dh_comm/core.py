@@ -10,6 +10,13 @@ import numpy.random as rnd
 from numpy.random import randn
 # helper functions
 from functools import partial
+# package local
+from .params import get_key
+from .params import has_key
+
+################################################################################
+# comm. utility functions
+################################################################################
 
 def crandn(*args):
     '''
@@ -60,6 +67,10 @@ def bv2dec(bit_mat):
     dec_vec = np.sum(bit_mat * base_vec[None,:], axis=1)
 
     return dec_vec
+
+################################################################################
+# comm. classes
+################################################################################
 
 class Receiver:
     '''
@@ -121,7 +132,7 @@ class Transmitter:
     def __init__(self, p,
                  encoder = None,
                  modulator = None,
-                 training = False
+                 training = False,
                  ):
 
         #NOTE: does not allow training and encoding
@@ -132,7 +143,6 @@ class Transmitter:
         self.mod = modulator
         self.enc = encoder
         self.training = training
-
 
     def __call__(self, *args, **kwargs):
         return self.generate(*args, **kwargs)
@@ -204,13 +214,16 @@ class Channel:
     Encapsulate channel and noise generation, application
     '''
 
-    def __init__(self, p):
-        self.p = p
-        self.ch_gen = partial(self.channels[p.ch_type], self)
-        self.n_gen = partial(self.noise_table[p.noise_type], self)
+    def __init__(self, p, mode=None):
 
         # log uniform for now
         assert(p.noise_dist == 'log_uniform')
+
+        self.p = p
+        self.pm = pm = getattr(p,mode)
+        self.ch_gen = partial(self.channels[get_key(pm.ch_type)], self)
+        self.n_gen = partial(self.noise_table[get_key(pm.noise_type)], self)
+        self.batch_fixed = has_key(pm.ch_type, 'batch_fixed')
 
     def __call__(self, syms):
         return self.apply(syms)

@@ -1,4 +1,16 @@
+################################################################################
+# utility functions
+################################################################################
+
+def get_key(string, delimiter=',', index=0):
+    return string.split(delimiter)[index]
+
+def has_key(string, key, delimiter=','):
+    return key in string.split(delimiter)
+
+################################################################################
 # implements recursive parameter structure
+################################################################################
 import numpy as np
 
 class RecursiveParams:
@@ -11,7 +23,7 @@ class RecursiveParams:
 
     Automatic conversion of lists to arrays
 
-    Can be json serialized.  See asdict() below.
+    Can be json serialized.  See as_serializable() below.
     '''
     def __init__(self, **kwargs):
         # perform recursive conversion to RP
@@ -37,11 +49,23 @@ class RecursiveParams:
     def __eq__(self, other):
         return self.__dict__ == other.__dict__
 
-    def asdict(self):
+    def as_dict(self, exclude=()):
+        '''
+        return dictionary, with exclude filter
+        intended for passing into function as kwargs
+        NOTE: does not recurse
+        '''
+        new_dict = {}
+        for key, val in self.__dict__.items():
+            if key not in exclude:
+                new_dict.update({key: val})
+        return new_dict
+
+    def as_serializable(self):
         '''
         used for json serialization
         e.g. p = RecursiveParams()
-             json.dumps(p.asdict())
+             json.dumps(p.as_serializable())
         '''
         # recursively reconstruct dict from RP
         new_dict = {}
@@ -49,12 +73,12 @@ class RecursiveParams:
             # determine value type
             # NOTE: forms a complicated triage (yes/no questions) procedure
             #       order is important in this case
-            if callable(val):
+            if callable(val) and hasattr(val, '__name__'):
                 # function or class object
                 new_dict.update({key:val.__name__})
             elif type(val) is RecursiveParams:
                 # another RP instance
-                new_dict.update({key: val.asdict()})
+                new_dict.update({key: val.as_serializable()})
             elif np.isscalar(val) and isinstance(val, (np.number,np.ndarray) ):
                 # numpy scalar (any integer/float or zero-dimension array)
                 new_dict.update({key: val.item()})

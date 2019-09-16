@@ -62,11 +62,11 @@ class MomentumSchedule:
         self.final_iteration = False;
         self.base = 1. - initial_momentum
         self.name = name
-        self.step = 0
+        self.step = tf.Variable(0.)
 
     def update(self):
         # must be called synchronized
-        self.step += 1
+        self.step.assign_add(1.)
 
     def __call__(self):
         step = self.step
@@ -95,6 +95,9 @@ class MomentumSchedule:
         # FIXME
         return {}
 
+################################################################################
+# Custom Learning Rate Schedules
+################################################################################
 class LRDecaySchedule(LearningRateSchedule):
     '''
     Base class for periodic and aperiodic schedules
@@ -295,6 +298,9 @@ class HyperDense(Layer):
             return self.activation(x)
         return x
 
+    def num_layers(self):
+        return 1
+
 class Residual(Layer):
     '''
     Implements residual layer (Kaiming He et al., 2015)
@@ -355,6 +361,9 @@ class Residual(Layer):
         if batch_norm: x = self.bn_layer_2(x, training=training)
         x = x + self.transform(inputs)
         return self.activation(x)
+
+    def num_layers(self):
+        return 2
 
 class Square(Layer):
     '''
