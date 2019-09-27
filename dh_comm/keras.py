@@ -274,8 +274,9 @@ class HyperDense(Layer):
     def __init__(self, units,
                        activation=None,
                        kernel_initializer=None,
-                       batch_normalization=False):
-        super(HyperDense, self).__init__()
+                       batch_normalization=False,
+                       **kwargs):
+        super(HyperDense, self).__init__(**kwargs)
 
         batch_norm = batch_normalization
         use_bias = not batch_normalization

@@ -250,10 +250,19 @@ class Channel:
         return H
 
     def gen_rayleigh_ch(self, N, N_tx, N_rx):
+        #print('gen_rayleigh_ch, batch_fixed=', self.batch_fixed)
         # assume square matrix
         assert(N_tx == N_rx)
         scale = 1 / np.sqrt(N_tx)
-        return scale * crandn(N, N_tx, N_rx)
+
+        if self.batch_fixed:
+            # repeat H N-times
+            H = scale * crandn(N_tx, N_rx)
+            H_tsr = np.tile(H, (N,1,1))
+        else:
+            H_tsr = scale * crandn(N, N_tx, N_rx)
+
+        return H_tsr
 
     def gen_identity_ch(self, N, N_tx, N_rx):
         H = np.identity(N_tx).astype(complex)
