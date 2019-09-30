@@ -1,6 +1,8 @@
 import sys
 import re
-from .exceptions import ArgumentError
+import json
+import os
+from .parser import parse_opts
 from .exceptions import WriteError
 
 ################################################################################
@@ -12,67 +14,6 @@ def get_key(string, delimiter=',', index=0):
 
 def has_key(string, key, delimiter=','):
     return key in string.split(delimiter)
-
-# valid option strings
-valid_opt = re.compile('--((?:\w+)(?:[.]\w+)*)$')
-# string option values
-str_value = re.compile('str[(]([\w./]+)[)]$')
-'''
-NOTE: special treatment of strings is required
-      to support valid python expressions as option values.
-      String option values needs to be passed
-      as 'str(outdir/foo)'
-'''
-# invalid arguments
-invalid_arg = re.compile('(-|--)\w*')
-# string literals
-#str_literal = re.compile('[a-zA-Z_][\w]*')
-'''
-OLD:  This severely restrict the type of expressions
-      allowed on the RHS.  We can execute any valid
-      python expression within the current scope.
-'''
-
-def parse_opts(argv=None):
-
-    if argv is None:
-        argv = sys.argv
-
-    pos_args = []
-    opt_args = {}
-
-    print('command line args')
-    print(argv)
-
-    args = iter(argv[1:])
-
-    for arg in args:
-        match = valid_opt.match(arg)
-        if match:
-            try:
-                opt = match.group(1)
-                val = next(args)
-                # special handling for string values
-                str_match = str_value.match(val)
-                if str_match:
-                    str_val = str_match.group(1)
-                    print(str_val)
-                    opt_args[opt] = "r'{}'".format(str_val)
-                else:
-                    opt_args[opt] = val
-            except StopIteration:
-                raise ArgumentError(f'RP: missing option value: {arg}')
-        elif invalid_arg.match(arg):
-            raise ArgumentError(f'RP: Invalid argument: {arg}')
-        else:
-            pos_args.append(arg)
-
-    #print('positional args')
-    #print(pos_args)
-    print('optional args')
-    print(opt_args)
-
-    return opt_args
 
 ################################################################################
 # implements recursive parameter structure
@@ -91,9 +32,9 @@ class RecursiveParams:
 
     Can be json serialized.  See as_serializable() below.
     '''
-    def __init__(self, **kwargs):
+    def convert_to_rp(self, d):
         # perform recursive conversion to RP
-        for key, val in kwargs.items():
+        for key, val in d.items():
             #print('item ({}: {})'.format(key,val))
             if type(val) is dict:
                 # construct lower level RP
@@ -104,6 +45,9 @@ class RecursiveParams:
             else:
                 # anything else
                 self.__dict__.update({key: val})
+
+    def __init__(self, **kwargs):
+        self.convert_to_rp(kwargs)
 
     def __repr__(self):
         #keys = sorted(self.__dict__)
@@ -127,10 +71,44 @@ class RecursiveParams:
                 new_dict.update({key: val})
         return new_dict
 
-    def as_serializable(self):
+    def as_serializable(self, permissive=False):
         '''
         used for json serialization
         e.g. p = RecursiveParams()
+             p.param = val
+             json.dumps(p.as_serializable())
+        '''
+        # recursively reconstruct dict from RP
+        new_dict = {}
+        for key, val in self.__dict__.items():
+            # determine value type
+            # NOTE: forms a complicated triage (yes/no questions) procedure
+            #       order is important in this case
+            if callable(val) and hasattr(val, '__name__'):
+                # function or class object
+                raise ValueError('Cannot serialize function or class object')
+            elif type(val) is RecursiveParams:
+                # another RP instance
+                new_dict.update({key: val.as_serializable()})
+            elif np.isscalar(val) and isinstance(val, (np.number,np.ndarray) ):
+                # numpy scalar (any integer/float or zero-dimension array)
+                new_dict.update({key: val.item()})
+            elif isinstance(val, np.ndarray):
+                # numpy array (automatic conversion to python types)
+                new_dict.update({key: val.tolist()})
+            elif hasattr(val,'__dict__') or hasattr(val,'__slot__'):
+                # instance of non-builtin type
+                raise ValueError('Cannot serialize instance of a non-builtin type')
+            else:
+                # instance of builtin type (numeric or string)
+                new_dict.update({key: val})
+        return new_dict
+
+    def _serialize_permissive(self):
+        '''
+        used for json serialization (old, very permissive)
+        e.g. p = RecursiveParams()
+             p.param = val
              json.dumps(p.as_serializable())
         '''
         # recursively reconstruct dict from RP
@@ -159,49 +137,92 @@ class RecursiveParams:
                 new_dict.update({key: val})
         return new_dict
 
-    def set_rparam(self, relpath, val, create_new=False):
+    def save_rparams(self, fullpath):
+        ''' save RP to file in json format '''
+        fname, fext = os.path.splitext(fullpath)
+        assert fext in ('', '.json')
+        if not fext: fullpath = fname + '.json'
+        with open(fullpath, 'w') as fp:
+            print('writing params to file:', fullpath)
+            json.dump(self.as_serializable(), fp, indent=4)
+
+
+    def set_rparam(self, fullpath, val, create_new=False, override_pdict=False):
         '''
         set recursive param to value
 
         format:
             'param1.param2.param3': 'value'
         '''
-        fullpath = '.'.join(('self',relpath))
+        # make instance accessible from p
+        p = self
+        #fullpath = '.'.join(('self',relpath))
 
         # perform a whole bunch of sanity checks...
         try:
             obj = eval(fullpath)
-            # if reference exist...
+            # writing to existing RP
             if type(obj) is RecursiveParams:
-                raise WriteError("RP: Cannot override param structure")
+                if not override_pdict:
+                    raise WriteError("Cannot override param structure.  " +
+                                     "If this is intended, set override_pdict=True")
         except AttributeError as err:
             # re-raise exception, if attribute creation not permitted
             if not create_new:
-                raise WriteError("RP: Attribute creation not permitted. " +
+                raise WriteError("Attribute creation not permitted.  " +
                                  "If this is intended, set create_new=True")
 
         # set param to val
         stmt = f'{fullpath} = {val}'
-        print('eval:', stmt)
+        #print('eval:', stmt)
         exec(stmt)
 
-    def set_rparams(self, pdict, create_new=False):
-        '''
-        override params defined in pdict
-        '''
+    def set_rparams(self, pdict, **kwargs):
+        ''' override params defined in pdict '''
         for key, val in pdict.items():
-            self.set_rparam(key, val, create_new)
+            self.set_rparam(key, val, **kwargs)
 
-    def parse_opts(self, argv=None):
-        '''
-        parse all options in the command line
-        '''
-        return parse_opts(argv)
+    def process_opts(self):
+        ''' options processing '''
+        print('parsing options from command line')
+        pdict, odict = parse_opts()
 
-    def process_opts(self, argv=None):
-        '''
-        override params defined in command line
-        '''
-        pdict = self.parse_opts(argv)
-        self.set_rparams(pdict)
+        # special handling for param clobbering
+        if 'pfile' in odict:
+            pfile = odict.pop('pfile')
+            print('reading from params file:')
+            with open(pfile, 'r') as f:
+                d = json.load(f)
+            #print(f'read in dict: {d}')
+            # clobber existing contents
+            #print('clobbering RP...')
+            self.__dict__.clear()
+            # use params from file (in d)
+            self.convert_to_rp(d)
+            return
+
+        # process options file
+        if 'ofile' in odict:
+            ofile = odict.pop('ofile')
+            if ofile == 'stdin':
+                print('reading options from stdin')
+                # clobber pdict
+                pdict = json.load(sys.stdin)
+                #print(f'stdin dict: {pdict}')
+                print(f'{len(pdict)} params received')
+            else:
+                print('reading from options file')
+                # clobber pdict
+                with open(ofile, 'r') as f:
+                    pdict = json.load(f)
+                #print(f'options dict: {pdict}')
+                print(f'{len(pdict)} params received')
+
+        # pdict may survive if not (pfile or ofile)
+        # in that case, dict may hold options
+        # from the command line
+
+        # update params from pdict
+        # pass in keyword args in odict
+        self.set_rparams(pdict, **odict)
 
