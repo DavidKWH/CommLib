@@ -37,6 +37,9 @@ def save_model(p, model):
     pbytes = json.dumps(p.as_serializable()).encode()
     sim_id = hashlib.blake2b(pbytes, digest_size=8).hexdigest()
 
+    # ensure folder exists
+    os.makedirs(p.outdir, exist_ok=True)
+
     pname = '_'.join((p.bname, p.sname, sim_id))
     pname = '/'.join((p.outdir, pname))
 
