@@ -49,9 +49,33 @@ def reduce_or(iterable):
 # parameter input control
 ################################################################################
 def parse_opts(argv=None):
-    '''
-    parse all options in the command line
-    returns options dict
+    '''parse all options in the command line
+
+    It is possible to override a param with python expressions as the core
+    actually runs eval() on the passed-in value.  To provide some level of
+    security, python statements (other than scalars, lists or tuples) must
+    be specified with py(expr) on the command line.
+
+    Params are overridden via three methods:
+
+      * directly at the command line
+      * via an intermediate options file in json format
+      * via a fully nested params file in json format
+
+    The intermediate options file is used by the hyperopt module to pass
+    overridden parameters to a model training script.  The fully nexted
+    param is typically the output of a RP.save_rparams(),
+    i.e. output of a particular training run.
+
+    The command line specification differs slightly from the json scheme.
+    All identifier like strings are converted to raw strings.  Scalars,
+    lists and tuples are accepted and passed-in unaltered. A valid python
+    expression <expr> must be specified as py(<expr>). All other value types
+    will fail.
+
+    In json files, no restrictions exist for value types.  The main caveat is
+    that strings must be specified with r"some_str" as this will be passed to
+    eval().
     '''
     if argv is None:
         argv = sys.argv

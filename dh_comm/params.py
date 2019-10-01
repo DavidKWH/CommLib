@@ -2,6 +2,7 @@ import sys
 import re
 import json
 import os
+import numpy as np
 from .parser import parse_opts
 from .exceptions import WriteError
 
@@ -18,19 +19,31 @@ def has_key(string, key, delimiter=','):
 ################################################################################
 # implements recursive parameter structure
 ################################################################################
-import numpy as np
 
 class RecursiveParams:
     '''
     Recursive parameter structure with attribute like access
 
-    A way to make structure access easier (matlab like)
+    The RP was originally conceived as a way to make structure
+    access easier (matlab like).
+
     e.g.        p.rx.demod.param1 = 10
     instead of  p['rx']['demod']['param1'] = 10
 
-    Automatic conversion of lists to arrays
+    RPs can be json serialized.  The types supported are strings,
+    scalars and lists.  Thus, for a training run, one can save
+    all parameters into a file and replay the exact scenario again
+    by loading it from file.  See as_serializable() below.
 
-    Can be json serialized.  See as_serializable() below.
+    An entry can also be overridden using an intermediate format
+    (usually specified in a dictionary):
+
+    { 'p.n_layers'   : 5,
+      'p.adam.beta_1': 0.9,
+      'p.adam.beta_2': 0.999, }
+
+    This allows for quick experimentation and hyperparameter tuning.
+
     '''
     def convert_to_rp(self, d):
         # perform recursive conversion to RP
@@ -107,9 +120,6 @@ class RecursiveParams:
     def _serialize_permissive(self):
         '''
         used for json serialization (old, very permissive)
-        e.g. p = RecursiveParams()
-             p.param = val
-             json.dumps(p.as_serializable())
         '''
         # recursively reconstruct dict from RP
         new_dict = {}
@@ -148,12 +158,7 @@ class RecursiveParams:
 
 
     def set_rparam(self, fullpath, val, create_new=False, override_pdict=False):
-        '''
-        set recursive param to value
-
-        format:
-            'param1.param2.param3': 'value'
-        '''
+        ''' set recursive param to value '''
         # make instance accessible from p
         p = self
         #fullpath = '.'.join(('self',relpath))
