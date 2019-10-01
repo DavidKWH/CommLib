@@ -81,6 +81,11 @@ def run_hyperopt_task(script,
 
     if dry_run: print('NOTE: dry run, no tasks will be scheduled')
 
+    # ensure all lists (in pairs) have the same length
+    for d in pairs:
+        lens = [len(l) for l in d.values()]
+        assert len(set(lens)) == 1, 'lists must have the same length'
+
     cmd = []
     cmd.append(sys.executable)
     cmd.append(script)
