@@ -1,4 +1,7 @@
 import tensorflow as tf
+# loss specific
+from tensorflow.python.keras.losses import LossFunctionWrapper
+from tensorflow.keras import backend as K
 # metric specific
 from tensorflow.python.keras.metrics import MeanMetricWrapper
 # schedule specific
@@ -11,6 +14,96 @@ from tensorflow.keras import activations
 #from tensorflow.keras import initializers
 # misc.
 from functools import partial
+# debug
+from .util import DumpFullTensor
+
+################################################################################
+# Custom Losses and Metrics
+################################################################################
+def complement_entropy(y_true, y_pred,
+                       alpha=0.,
+                       beta=1.,
+                       guided_comp_entropy=False,
+                       from_logits=True):
+    '''
+    Implement compliment entropy loss. See
+    Complemetary Objective Training, Hao-Yun Chen et al., 2019
+    Improving Adversarial Robustness via Guided Complement Entropy,
+    Hao-Yun Chen et al., 2019
+    NOTE: numerical conditioning in (1),(2)
+    NOTE: any arguments can be passed into this function via
+          the LossFunctionWrapper class
+
+    Default COT computes sample complement entropy
+        samp_ent = q * log_q * mask
+    When GCE is selected
+        samp_ent = Yg^alpha * q * log_q * mask
+
+    Assumptions:
+        y_true are tensor of integers of rank R
+        y_pred are tensor of logits of rank R+1
+        axis = batch_dims = R
+    '''
+    y_pred = tf.convert_to_tensor(y_pred)
+    num_classes = y_pred.shape[-1]
+    # NOTE: the two statements don't work in graph mode...
+    #axis = batch_dims = y_true.ndim
+    #axis = batch_dims = tf.rank(y_true)
+    axis = batch_dims = K.ndim(y_true)
+    zeros = tf.constant(0.)
+    ones = tf.constant(1.)
+
+    p_hat = tf.nn.softmax(y_pred)
+    # get predicted prob of ground truth class
+    Yg = tf.gather(p_hat, y_true[...,None],
+                   axis=axis,
+                   batch_dims=batch_dims)
+#    print('sum_Yg',K.sum(Yg))
+    # compute 1-Yg
+    Yg_comp = (1.-Yg) + 1e-7 # (1)
+    # compute normalized distribution q_hat
+    q = p_hat / Yg_comp
+    log_q = tf.math.log(q + 1e-10) # (2)
+    # compute mask for complementary classes
+    mask = tf.one_hot(y_true, num_classes,
+                      on_value=zeros,
+                      off_value=ones)
+#    print(y_true)
+#    print(tf.where(mask == 0))
+#    with DumpFullTensor():
+#        print('full mask')
+#        print(mask.numpy())
+    # sample complement entropy
+    samp_ent = q * log_q * mask
+    # GCE specific
+    if guided_comp_entropy:
+        alpha = tf.cast(alpha, y_pred.dtype)
+        Yg_alpha = Yg**alpha
+        samp_ent *= Yg_alpha
+    # average over complementary set
+    loss = tf.reduce_mean(samp_ent, axis=-1)
+    # scale according to paper recommendation
+    loss *= beta
+    # NOTE: minimizing negative entropy
+    return loss
+
+class ComplementEntropy(LossFunctionWrapper):
+    '''
+    Wrapper class for complement_entropy()
+    '''
+    def __init__(self,
+                 alpha=0.,
+                 beta=1.,
+                 guided_comp_entropy=False,
+                 from_logits=True,
+                 name='complement_entropy'):
+        assert from_logits
+        super().__init__(complement_entropy,
+                         alpha=alpha,
+                         beta=beta,
+                         guided_comp_entropy=guided_comp_entropy,
+                         from_logits=from_logits,
+                         name=name)
 
 ################################################################################
 # Custom Metrics
@@ -365,6 +458,23 @@ class Residual(Layer):
 
     def num_layers(self):
         return 2
+
+class Zeros(Layer):
+    '''
+    Splits out zeros with capatible shape
+    NOTE: pass in batch_size to avoid issues
+    '''
+    def __init__(self, units):
+        super().__init__()
+        self.units = units
+
+    def build(self, input_shape):
+        self.z = tf.zeros((input_shape[-1], self.units))
+        self.zeros = lambda x : tf.matmul( x, self.z )
+
+    def call(self, inputs):
+        x = inputs
+        return self.zeros(x)
 
 class Square(Layer):
     '''

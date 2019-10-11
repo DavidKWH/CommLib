@@ -1,4 +1,5 @@
 # Interface components to Tensorflow
+import os
 import json
 import hashlib
 import numpy as np

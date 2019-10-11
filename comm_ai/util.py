@@ -1,47 +1,29 @@
 from time import time, perf_counter
 from datetime import timedelta
 from math import log10, ceil
+import numpy as np
 
 ################################################################################
 # utility functions
 ################################################################################
 
-#def get_key(string, delimiter=',', index=0):
-#    return string.split(delimiter)[index]
-
 ################################################################################
 # uncategorized classes
 ################################################################################
-
-class BitErrorRate:
+class DumpFullTensor:
     '''
-    Implement the BER metric
+    context manager for printing full numpy arrays
     '''
-    def __init__(self,K):
-        self.errs = 0
-        self.cnt = 0
-        self.K = K
+    def __init__(self, **kwargs):
+        kwargs.setdefault('threshold', np.inf)
+        self.opt = kwargs
 
-    def __call__(self, *args, **kwargs):
-        self.update_state(*args, **kwargs)
+    def __enter__(self):
+        self._opt = np.get_printoptions()
+        np.set_printoptions(**self.opt)
 
-    def update_state(self, true, pred):
-        K = self.K
-        errs = sum(true[:K] != pred[:K])
-        self.cnt += 1
-        self.errs += errs
-
-    def reset_states(self):
-        self.errs = 0
-        self.cnt = 0
-
-    def result(self):
-        cnt = self.cnt
-        errs = self.errs
-        K = self.K
-
-        total = cnt * K
-        return errs / total
+    def __exit__(self, type, value, traceback):
+        np.set_printoptions(**self._opt)
 
 class Timer(object):
     ''' 
@@ -84,4 +66,36 @@ class PrecisionTimer(object):
             else:
                 elapsed *= 1000
 
+################################################################################
+# old stuff
+################################################################################
 
+#class BitErrorRate:
+#    '''
+#    Implement the BER metric
+#    '''
+#    def __init__(self,K):
+#        self.errs = 0
+#        self.cnt = 0
+#        self.K = K
+#
+#    def __call__(self, *args, **kwargs):
+#        self.update_state(*args, **kwargs)
+#
+#    def update_state(self, true, pred):
+#        K = self.K
+#        errs = sum(true[:K] != pred[:K])
+#        self.cnt += 1
+#        self.errs += errs
+#
+#    def reset_states(self):
+#        self.errs = 0
+#        self.cnt = 0
+#
+#    def result(self):
+#        cnt = self.cnt
+#        errs = self.errs
+#        K = self.K
+#
+#        total = cnt * K
+#        return errs / total
