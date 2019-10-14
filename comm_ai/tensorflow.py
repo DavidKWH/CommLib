@@ -17,13 +17,28 @@ from .core import bv2dec
 ################################################################################
 # Support functions
 ################################################################################
-def plot_model(model, ifile, show=False):
+def get_sim_id(p, size=8):
+    '''generate simulation id via param based digest'''
+    pbytes = json.dumps(p.as_serializable()).encode()
+    sim_id = hashlib.blake2b(pbytes, digest_size=size).hexdigest()
+    return sim_id
+
+def plot_model(p, model, show=False):
     ''' plot image file '''
-    print('saving model graph to file:', ifile)
-    tf.keras.utils.plot_model(model, ifile, show_shapes=True)
+
+    # ensure folder exists
+    os.makedirs(p.outdir, exist_ok=True)
+
+    pname = '_'.join((p.bname, p.sname, get_sim_id(p)))
+    pname = '/'.join((p.outdir, pname))
+
+    fname = pname + '.png'
+
+    print('saving model graph to file:', fname)
+    tf.keras.utils.plot_model(model, fname, show_shapes=True)
     if show:
         print('close plot to continue...')
-        img = mpimg.imread(ifile)
+        img = mpimg.imread(fname)
         plt.figure(dpi=175)
         #plt.imshow(img, interpolation='nearest')
         plt.imshow(img, interpolation='bilinear')
@@ -34,14 +49,11 @@ def plot_model(model, ifile, show=False):
 
 def save_model(p, model):
     ''' save model to file '''
-    # generate simulation id via param based digest
-    pbytes = json.dumps(p.as_serializable()).encode()
-    sim_id = hashlib.blake2b(pbytes, digest_size=8).hexdigest()
 
     # ensure folder exists
     os.makedirs(p.outdir, exist_ok=True)
 
-    pname = '_'.join((p.bname, p.sname, sim_id))
+    pname = '_'.join((p.bname, p.sname, get_sim_id(p)))
     pname = '/'.join((p.outdir, pname))
 
     # save params to file
