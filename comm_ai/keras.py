@@ -1,4 +1,5 @@
 import tensorflow as tf
+import numpy as np
 # loss specific
 from tensorflow.python.keras.losses import LossFunctionWrapper
 from tensorflow.keras import backend as K
@@ -213,6 +214,7 @@ class LRDecaySchedule(LearningRateSchedule):
         'log_based'   : log_based_decay,
     }
 
+
 class PeriodicLRDecaySchedule(LRDecaySchedule):
     '''
     Implements (periodic) learning rate schedule
@@ -280,6 +282,7 @@ class PeriodicLRDecaySchedule(LRDecaySchedule):
     def get_config(self):
         # FIXME
         return {}
+
 
 class AperiodicLRDecaySchedule(LRDecaySchedule):
     '''
@@ -355,6 +358,81 @@ class AperiodicLRDecaySchedule(LRDecaySchedule):
 ################################################################################
 # Custom Layers
 ################################################################################
+class GraphConv(Layer):
+    '''
+    Implements a single GCN layer (Kipf and Welling, 2017)
+
+    NOTE:
+        X is a NxC matrix, each row x_i is a 1xC vector of features
+        N is the number of nodes in the graph
+    '''
+    def __init(self, units=None,
+                     activation=None,
+                     kernel_initializer=None,
+                     adjacency_matrix=None,
+                     **kwargs):
+        super().__init__(**kwargs)
+
+        assert A, "must specify adjacency matrix"
+        A = adjacency_matrix
+        # square matrix
+        assert A.ndim == 2 and len(set(A.shape)) == 1, \
+                "adjacency matrix must be square"
+        A_til = A + np.eye(A.shape[0])
+        d_til = np.sum(A_til, axis=1)
+        D_til = np.diag(d_til)
+        d_til_nh = - np.sqrt(d_til)
+        D_til_nh = np.diag(d_til_nh)
+        # precompute (D^{-half} A D^{-half})
+        A_hat = D_til_nh @ A @ D_til_nh
+        # convert to sparse tensor
+        # NOTE: have to use tf.sparse routines for computations
+        #       see tf.sparse docs
+        A_hat_sparse = tf.sparse.from_dense(A_hat)
+
+        self.A_hat = A_hat
+        # input must have the same dimension as anyone dimension of A
+        self.units = unit
+        self.activation = activation
+        self.initializer = kernel_initializer
+
+    def build(self, input_shape):
+        '''
+        input.shape = (B, N, C)
+            B = batch size
+            N = num nodes in graph
+            C = num features per node
+
+        W.shape = (C, H)
+            C = input_shape(-1)
+            H = units,
+        '''
+        self.W = self.add_weight(name='W', # needed for tf.saved_model.save()
+                                shape=(input_shape[-1], self.units),
+                                initializer=self.initializer,
+                                trainable=True)
+
+    def call(self, inputs, training=False):
+        '''
+        input.shape = (B, N, inputs.shape[-1])
+        output.shape = (B, N, units)
+        '''
+
+        # function to be applied to each batch sample
+        def graph_conv(X):
+            W = self.W
+            A_hat = self.A_hat
+            return A_hat @ X @ W
+
+        x = inputs
+        x = tf.map_fn(graph_conv, x)
+        if self.batch_norm:
+            x = self.bn_layer(x, training=training)
+        if self.activation is not None:
+            return self.activation(x)
+        return x
+
+
 class HyperDense(Layer):
     '''
     Implements batch normalized dense layer (Ioffe and Szegedy, 2015)
@@ -394,6 +472,7 @@ class HyperDense(Layer):
 
     def num_layers(self):
         return 1
+
 
 class Residual(Layer):
     '''
@@ -459,40 +538,6 @@ class Residual(Layer):
     def num_layers(self):
         return 2
 
-class Zeros(Layer):
-    '''
-    Splits out zeros with capatible shape
-    NOTE: pass in batch_size to avoid issues
-    '''
-    def __init__(self, units):
-        super().__init__()
-        self.units = units
-
-    def build(self, input_shape):
-        self.z = tf.zeros((input_shape[-1], self.units))
-        self.zeros = lambda x : tf.matmul( x, self.z )
-
-    def call(self, inputs):
-        x = inputs
-        return self.zeros(x)
-
-class Square(Layer):
-    '''
-    Implements a dense layer with square activation
-    '''
-    def __init__(self, units,
-                       kernel_initializer=None):
-        super(Square, self).__init__()
-
-        dense_output_layer = partial(Dense, activation=None,
-                                            kernel_initializer=kernel_initializer)
-
-        self.layer_1 = dense_output_layer(units)
-
-    def call(self, inputs):
-        x = inputs
-        x = self.layer_1(x)
-        return tf.math.square(x)
 
 class MaxOut(Layer):
     '''
@@ -526,72 +571,42 @@ class MaxOut(Layer):
         return out
 
 ################################################################################
-# Old stuff
+# Self conceived layers
 ################################################################################
-#class BatchNormedDense(Layer):
-#    '''
-#    Implements batch normalized dense layer (Ioffe and Szegedy, 2015)
-#    '''
-#    def __init__(self, units,
-#                       activation=None,
-#                       kernel_initializer=None):
-#        super(BatchNormedDense, self).__init__()
-#
-#        dense_linear_layer = partial(Dense, activation=None,
-#                                            use_bias=False,
-#                                            kernel_initializer=kernel_initializer)
-#        batch_norm_layer = BatchNormalization
-#
-#        self.d_layer = dense_linear_layer(units)
-#        self.bn_layer = batch_norm_layer()
-#        self.activation = activation
-#
-#    def call(self, inputs, training=False):
-#        x = inputs
-#        x = self.d_layer(x)
-#        x = self.bn_layer(x, training=training)
-#        if self.activation is not None:
-#            return self.activation(x)
-#        return x
+class Zeros(Layer):
+    '''
+    Splits out zeros with capatible shape
+    NOTE: pass in batch_size to avoid issues
+    '''
+    def __init__(self, units):
+        super().__init__()
+        self.units = units
 
-################################################################################
-# Examples
-################################################################################
-'''
-class BinaryTruePositives(Metric):
-    def __init__(self, name='binary_true_positives', **kwargs):
-        super(BinaryTruePositives, self).__init__(name=name, **kwargs)
-        self.true_positives = self.add_weight(name='tp', initializer='zeros')
-    def update_state(self, y_true, y_pred, sample_weight=None):
-        y_true = tf.cast(y_true, tf.bool)
-        y_pred = tf.cast(y_pred, tf.bool)
-        values = tf.logical_and(tf.equal(y_true, True), tf.equal(y_pred, True))
-        values = tf.cast(values, self.dtype)
-        if sample_weight is not None:
-            sample_weight = tf.cast(sample_weight, self.dtype)
-            sample_weight = tf.broadcast_weights(sample_weight, values)
-            values = tf.multiply(values, sample_weight)
-            self.true_positives.assign_add(tf.reduce_sum(values))
-    def result(self):
-        return self.true_positives
-'''
+    def build(self, input_shape):
+        self.z = tf.zeros((input_shape[-1], self.units))
+        self.zeros = lambda x : tf.matmul( x, self.z )
 
-'''
-class Linear(Layer):
+    def call(self, inputs):
+        x = inputs
+        return self.zeros(x)
 
-  def __init__(self, units=32):
-    super(Linear, self).__init__()
-    self.units = units
 
-  def build(self, input_shape):
-    self.w = self.add_weight(shape=(input_shape[-1], self.units),
-                             initializer='random_normal',
-                             trainable=True)
-    self.b = self.add_weight(shape=(self.units,),
-                             initializer='random_normal',
-                             trainable=True)
+class Square(Layer):
+    '''
+    Implements a dense layer with square activation
+    '''
+    def __init__(self, units,
+                       kernel_initializer=None):
+        super(Square, self).__init__()
 
-  def call(self, inputs):
-    return tf.matmul(inputs, self.w) + self.b
-'''
+        dense_output_layer = partial(Dense, activation=None,
+                                            kernel_initializer=kernel_initializer)
+
+        self.layer_1 = dense_output_layer(units)
+
+    def call(self, inputs):
+        x = inputs
+        x = self.layer_1(x)
+        return tf.math.square(x)
+
 

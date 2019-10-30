@@ -23,15 +23,19 @@ def get_sim_id(p, size=8):
     sim_id = hashlib.blake2b(pbytes, digest_size=size).hexdigest()
     return sim_id
 
-def plot_model(p, model, show=False):
-    ''' plot image file '''
-
+def get_prefix(p):
+    '''generate filepath (ensure parent folder exists)'''
     # ensure folder exists
     os.makedirs(p.outdir, exist_ok=True)
 
     pname = '_'.join((p.bname, p.sname, get_sim_id(p)))
     pname = '/'.join((p.outdir, pname))
+    return pname
 
+def plot_model(p, model, show=False):
+    ''' plot image file '''
+
+    pname = get_prefix(p)
     fname = pname + '.png'
 
     print('saving model graph to file:', fname)
@@ -50,11 +54,8 @@ def plot_model(p, model, show=False):
 def save_model(p, model):
     ''' save model to file '''
 
-    # ensure folder exists
-    os.makedirs(p.outdir, exist_ok=True)
-
-    pname = '_'.join((p.bname, p.sname, get_sim_id(p)))
-    pname = '/'.join((p.outdir, pname))
+    # get prefix
+    pname = get_prefix(p)
 
     # save params to file
     fname = pname + '.json'
