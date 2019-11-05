@@ -4,6 +4,10 @@ graph related tools
 import numpy as np
 import tensorflow as tf
 from functools import partial
+import os
+
+#from concurrent.futures import ThreadPoolExecutor
+#from concurrent.futures import ProcessPoolExecutor
 
 from .core import QAMModulator
 from .core import Demodulator
@@ -12,6 +16,14 @@ from .core import Receiver
 from .core import Channel
 from .core import cplx2reals
 from .core import bv2dec
+
+################################################################################
+# module initialization
+################################################################################
+#cores = os.sched_getaffinity(0)
+#num_cores = len(cores)
+#print(f'num cores available: {num_cores}')
+#SelectedExecutor = ThreadPoolExecutor
 
 ################################################################################
 # support functions
@@ -350,18 +362,24 @@ class CommGraph:
         h_idx_vec, h_tsr, y_tsr, sym_tsr, sym_idx_vec, n_var_tsr = source
 
         # lookup K nearest-neighbors
-        # NOTE: 2.5x speed up with radius adaptation
-        # NOTE: data does not fit in cache is the dominant slowdown
-        nb_idx_list = [ self._find_neighbors(h_idx, y_vec)
-                          for h_idx, y_vec in zip(h_idx_vec, y_tsr) ]
-        nb_idx_mat_1 = np.array(nb_idx_list)
+        '''
+         Performance summary:
+          * 2.5x speed up with radius adaptation (method 2)
+          * the other major factor is that the tensor does not fit in cache
+          * slight improvement, using all CPU cores with thread pool (method 3)
+            memory contention seems to be the issue...
+         Method 1: sort all points with no search radius (sort all points)
+         Method 2: sort with adaptive sort radius
+         Method 3: use ThreadPoolExecutor instead of list comprehension
+        '''
+        #nb_idx_list = [ self._find_neighbors(h_idx, y_vec)
+        #                  for h_idx, y_vec in zip(h_idx_vec, y_tsr) ]
         nb_idx_list = [ neighbor_finder.find(h_idx, y_vec)
                           for h_idx, y_vec in zip(h_idx_vec, y_tsr) ]
-        nb_idx_mat_2 = np.array(nb_idx_list)
+        #with SelectedExecutor(max_workers=num_cores) as executor:
+        #    nb_idx_list = executor.map( neighbor_finder.find, h_idx_vec, y_tsr)
+        nb_idx_mat = np.array(list(nb_idx_list))
         #np.testing.assert_array_equal(nb_idx_mat_1, nb_idx_mat_2)
-
-        # select output
-        nb_idx_mat = nb_idx_mat_2
 
         # save graph and features
         self.features = source
