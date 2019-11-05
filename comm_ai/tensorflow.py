@@ -7,12 +7,19 @@ import tensorflow as tf
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
 
-from . import core as dhc
+from .core import cplx2reals
 from .core import QAMModulator
 from .core import Demodulator
 from .core import Channel
 from .core import Transmitter
 from .core import bv2dec
+
+from tensorflow.keras.optimizers import SGD
+from tensorflow.keras.optimizers import Adam
+from .keras import PeriodicLRDecaySchedule
+from .keras import AperiodicLRDecaySchedule
+from .params import get_key
+from .params import has_key
 
 ################################################################################
 # Support functions
@@ -32,10 +39,20 @@ def get_prefix(p):
     pname = '/'.join((p.outdir, pname))
     return pname
 
-def plot_model(p, model, show=False):
+def get_model_prefix(p, model_name):
+    '''generate filepath (ensure parent folder exists)'''
+    # ensure folder exists
+    os.makedirs(p.outdir, exist_ok=True)
+
+    sname = '_'.join((p.sname, model_name)) if model_name else p.sname
+    pname = '_'.join((p.bname, sname, get_sim_id(p)))
+    pname = '/'.join((p.outdir, pname))
+    return pname
+
+def plot_model(p, model, name=None, show=False):
     ''' plot image file '''
 
-    pname = get_prefix(p)
+    pname = get_model_prefix(p, name)
     fname = pname + '.png'
 
     print('saving model graph to file:', fname)
@@ -76,6 +93,43 @@ def save_model(p, model):
     # Load the state of the old model
     # NOTE: remember to call the model with data to create the weights
     #new_model.load_weights(fname)
+
+################################################################################
+# optimizer selection
+################################################################################
+def get_optimizer(p):
+    '''create the optimizer'''
+
+    # schedule type lookup
+    schedule_types = {
+            'periodic' : PeriodicLRDecaySchedule,
+            'aperiodic': AperiodicLRDecaySchedule,
+    }
+
+    # optimizer type lookup
+    optimizer_types = {
+            'adam'    : Adam,
+            'momentum': SGD,
+    }
+
+    # sanity check
+    assert has_key(p.lr_sched.type, get_key(p.optimizer.type)), \
+        "schedule and optimizer do not match"
+
+    # setup schedule(s)
+    mt_schedule = None
+    lr_schedule = None
+    if p.lr_sched is not None:
+        Schedule = schedule_types[get_key(p.lr_sched.type)]
+        kwargs = p.lr_sched.as_dict(exclude=('type'))
+        lr_schedule = Schedule(**kwargs)
+
+    # setup optimizer
+    Optimizer = optimizer_types[get_key(p.optimizer.type)]
+    # FIXME: make serializer error more informative...
+    #if lr_schedule: p.optimizer.learning_rate = lr_schedule
+    kwargs = p.optimizer.as_dict(exclude=('type'))
+    optimizer = Optimizer(**kwargs)
 
 ################################################################################
 # Comm dataset V2
@@ -166,8 +220,8 @@ class CommDataSet:
         sym_vec = bv2dec(bit_mat) if sym_output else None
 
         # convert to reals
-        h_mat = dhc.cplx2reals(h_mat)
-        y_mat = dhc.cplx2reals(y_mat)
+        h_mat = cplx2reals(h_mat)
+        y_mat = cplx2reals(y_mat)
         # convert to tensors
         h_mat = tf.convert_to_tensor(h_mat, dtype=tf.float32)
         y_mat = tf.convert_to_tensor(y_mat, dtype=tf.float32)
@@ -220,8 +274,8 @@ class DnnDemod:
         y_mat = y_tsr.reshape(N,-1)
         n_var_mat = n_var_tsr.reshape(N,-1)
         # convert to reals
-        h_mat = dhc.cplx2reals(h_mat)
-        y_mat = dhc.cplx2reals(y_mat)
+        h_mat = cplx2reals(h_mat)
+        y_mat = cplx2reals(y_mat)
         # convert to tensors
         h_mat = tf.convert_to_tensor(h_mat, dtype=tf.float32)
         y_mat = tf.convert_to_tensor(y_mat, dtype=tf.float32)
@@ -231,4 +285,5 @@ class DnnDemod:
         logits = model(in_seq)
         llrs = - logits.numpy().astype(float)
         return llrs
+
 
