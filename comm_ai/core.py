@@ -28,6 +28,17 @@ def crandn(*args):
 
 def cplx2reals(a):
     '''
+    convert complex tensor of shape (M,N,...,K) into
+    real tensor of shape (M,N,...,2k) by concatenating
+    the real and image matrix along the last dimension
+    '''
+    assert (a.dtype == np.complex)
+    if a.ndim == 1: a = a[:,np.newaxis]
+    ac_all = np.concatenate([a.real, a.imag], axis=-1)
+    return ac_all
+
+def cplx2reals_old(a):
+    '''
     convert complex array of shape (N,k) into
     alternating real/imag arrays of shape (N,2k)
     e.g. a   = [a1, a2, ...]
@@ -191,8 +202,8 @@ class Transmitter:
         syms_tr = syms.transpose()
         # syms_tr.shape = (N_syms, N_sts)
         N_syms = N if training else p.N_syms
-        #syms_tsr = syms_tr.reshape(p.N_syms, p.N_sts, 1)
-        syms_tsr = syms_tr.reshape(N_syms, p.N_sts, 1)
+        #sym_tsr = syms_tr.reshape(p.N_syms, p.N_sts, 1)
+        sym_tsr = syms_tr.reshape(N_syms, p.N_sts, 1)
 
         # output processing
         if training:
@@ -206,7 +217,7 @@ class Transmitter:
             bits_output = raw_bits_list
 
         # return symbols, raw bits
-        return syms_tsr, bits_output
+        return sym_tsr, bits_output
 
 
 class Channel:
@@ -278,6 +289,11 @@ class Channel:
     '''
     noise generation functions
     '''
+    def gen_noiseless(self, N, N_rx):
+        n_tsr = np.zeros((N, N_rx, 1))
+        n_var_tsr = np.zeros((N,1,1))
+        return n_tsr, n_var_tsr
+
     def gen_fixed_var(self, N, N_rx):
         p = self.p
         std_n_tsr = crandn(N, N_rx, 1)
@@ -298,24 +314,46 @@ class Channel:
     noise_table = {
         'fixed_var' : gen_fixed_var,
         'rand_var' : gen_rand_var,
+        'noiseless' : gen_noiseless,
     }
 
-    def apply(self, syms_tsr):
+    def apply(self, sym_tsr):
         p = self.p
         ch_gen = self.ch_gen
         n_gen = self.n_gen
 
         # sym_tsr.shape = (N, N_tx, 1)
-        N = syms_tsr.shape[0]
+        N = sym_tsr.shape[0]
         # generate channel realizations
         h_tsr = ch_gen(N, p.N_tx, p.N_rx)
         # genrate (scaled) noise vectors
         n_tsr, n_var_tsr = n_gen(N, p.N_rx)
         # element-wise matrix multiplication via @
-        y_tsr = h_tsr @ syms_tsr + n_tsr
+        y_tsr = h_tsr @ sym_tsr + n_tsr
 
         return y_tsr, h_tsr, n_var_tsr
 
+    '''
+    Extension to Channel class
+    '''
+    def gen_channels(self, N):
+        p = self.p
+        return self.ch_gen(N, p.N_tx, p.N_rx)
+
+    def apply_channel(self, sym_tsr, h_mat):
+        p = self.p
+        n_gen = self.n_gen
+
+        # sym_tsr.shape = (N, N_tx, 1)
+        N = sym_tsr.shape[0]
+        # reshape h
+        h_tsr = h_mat[None,...]
+        # genrate (scaled) noise vectors
+        n_tsr, n_var_tsr = n_gen(N, p.N_rx)
+        # element-wise matrix multiplication via @
+        y_tsr = h_tsr @ sym_tsr + n_tsr
+
+        return y_tsr, n_var_tsr
 
 class Demodulator:
     '''
