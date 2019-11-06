@@ -20,12 +20,15 @@ from .core import bv2dec
 ################################################################################
 # module initialization
 ################################################################################
-cores = os.sched_getaffinity(0)
-num_cores = len(cores)
-print(f'num cores available: {num_cores}')
-print(f'using subprocesses for neighbor search')
-#SelectedExecutor = ThreadPoolExecutor
-SelectedExecutor = ProcessPoolExecutor
+proc_local = True
+
+if not proc_local:
+    cores = os.sched_getaffinity(0)
+    num_cores = len(cores)
+    print(f'num cores available: {num_cores}')
+    print(f'using subprocesses for neighbor search')
+    #SelectedExecutor = ThreadPoolExecutor
+    SelectedExecutor = ProcessPoolExecutor
 
 ################################################################################
 # support functions
@@ -85,39 +88,39 @@ class RandomVectorSampler:
 
         return samples
 
-class NegativeSampler:
-    '''
-    Generate negative samples for NCE
-    '''
-    def __init__(self, source, K):
-        self.source = source
-        self.N = N = source.shape[0]
-        self.K = K
-        self.N_div = N//K * K
-        self.arr = np.arange(N)
-        self.new_generator()
-
-    def new_generator(self):
-        arr = self.arr
-        N_div = self.N_div
-        K = self.K
-        # in-place shuff of array
-        np.random.shuffle(arr)
-        rnd_idx = arr[: N_div]
-        rnd_idx = rnd_idx.reshape(-1, K)
-        # save iterator
-        self.iter = iter(rnd_idx)
-
-    def get(self):
-        '''return indices of K samples'''
-        try:
-            samples = next(self.iter)
-        except StopIteration:
-            # reshuffle array
-            self.new_generator()
-            samples = next(self.iter)
-
-        return samples
+#class NegativeSampler:
+#    '''
+#    Generate negative samples for NCE
+#    '''
+#    def __init__(self, source, K):
+#        self.source = source
+#        self.N = N = source.shape[0]
+#        self.K = K
+#        self.N_div = N//K * K
+#        self.arr = np.arange(N)
+#        self.new_generator()
+#
+#    def new_generator(self):
+#        arr = self.arr
+#        N_div = self.N_div
+#        K = self.K
+#        # in-place shuff of array
+#        np.random.shuffle(arr)
+#        rnd_idx = arr[: N_div]
+#        rnd_idx = rnd_idx.reshape(-1, K)
+#        # save iterator
+#        self.iter = iter(rnd_idx)
+#
+#    def get(self):
+#        '''return indices of K samples'''
+#        try:
+#            samples = next(self.iter)
+#        except StopIteration:
+#            # reshuffle array
+#            self.new_generator()
+#            samples = next(self.iter)
+#
+#        return samples
 
 class NeighborFinder:
     '''
@@ -289,7 +292,7 @@ def gen_neighbor_table(p, rx_out):
     '''
     one unit of work for thread/process scheduling
     NOTE: run as standalone function to avoid
-          pickling error via subprocessing
+          pickling error when subprocessing
     '''
     #p = self.p
     neighbor_finder = NeighborFinder(p, rx_out)
@@ -368,20 +371,51 @@ class CommGraph:
 
         return y_tsr, sym_tsr, sym_vec, n_var_tsr
 
-    def _gen_neighbor_table(self, rx_out):
-        '''
-        one unit of work for thread/process scheduling
-        '''
+#    def _gen_neighbor_table(self, rx_out):
+#        '''
+#        one unit of work for thread/process scheduling
+#        '''
+#        p = self.p
+#        neighbor_finder = NeighborFinder(p, rx_out)
+#        # rx_out = (y_tsr, sym_tsr, sym_vec, n_var_tsr)
+#        y_tsr =  rx_out[0]
+#
+#        # lookup K nearest-neighbors
+#        nb_idx_list = [ neighbor_finder.find(y_vec) for y_vec in y_tsr ]
+#        nb_idx_mat = np.array(list(nb_idx_list))
+#
+#        return nb_idx_mat
+
+    def is_null(self):
+        return not (self.features and self.graph and self.per_ch_tables)
+
+    def save_graph(self, name='graph'):
         p = self.p
-        neighbor_finder = NeighborFinder(p, rx_out)
-        # rx_out = (y_tsr, sym_tsr, sym_vec, n_var_tsr)
-        y_tsr =  rx_out[0]
+        print(f'saving graph to file: {name}_xx.npz')
+        ''' save graph to file '''
+        fname = '_'.join((name,'features.npz'))
+        np.savez(fname, *self.features)
+        fname = '_'.join((name,'graph.npz'))
+        np.savez(fname, self.graph)
+        # save pertinent parameters
+        kwargs = p.graph_l.as_dict()
+        fname = '_'.join((name,'params.npz'))
+        np.savez(fname, **kwargs)
 
-        # lookup K nearest-neighbors
-        nb_idx_list = [ neighbor_finder.find(y_vec) for y_vec in y_tsr ]
-        nb_idx_mat = np.array(list(nb_idx_list))
+    def load_graph(self, name='graph'):
+        print(f'loading graph to file: {name}_xx.npz')
+        ''' load graph from file '''
+        fname = '_'.join((name,'features.npz'))
+        self.features = np.load(fname)
+        fname = '_'.join((name,'graph.npz'))
+        self.graph = np.load(fname)
+        fname = '_'.join((name,'params.npz'))
+        params = np.load(fname)
+        # sanity check
+        p = self.p
+        assert params == p.graph_l.as_dict(), 'dicts not the same'
+        # [TODO] rebuild per_ch_tables from data
 
-        return nb_idx_mat
 
     def gen_graph(self):
         '''
@@ -402,8 +436,9 @@ class CommGraph:
         h_mat_list = list(h_tsr)
 
         # generate per channel dataset
-        # returns list of tables (output from rx_gen())
-        # each table is itself a list of tensors y_tsr, sym_tsr, sym_vec, n_var_tsr
+        # returns list of tables, each an output from rx_gen()
+        # each table is itself a list of tensors
+        # (y_tsr, sym_tsr, sym_vec, n_var_tsr)
         rx_out_tables = [rx_gen(N_out, h_mat) for h_mat in h_mat_list]
         # save per channel tables
         self.per_ch_tables = rx_out_tables
@@ -414,10 +449,12 @@ class CommGraph:
           * approx. 2x speed up using ProcessPool over 8 cores
           * presumably due to subprocess overhead and memory contention
         '''
-        #neighbor_tables = [nb_gen(rx_out) for rx_out in rx_out_tables]
-        with SelectedExecutor(max_workers=num_cores) as executor:
-            proc_iter  = executor.map( nb_gen, rx_out_tables )
-        neighbor_tables = list(proc_iter)
+        #if proc_local:
+            #neighbor_tables = [nb_gen(rx_out) for rx_out in rx_out_tables]
+        if not proc_local:
+            with SelectedExecutor(max_workers=num_cores) as executor:
+                proc_iter  = executor.map( nb_gen, rx_out_tables )
+            neighbor_tables = list(proc_iter)
 
         #for nb1, nb2 in zip(neighbor_tables, nb_idx_list):
         #    np.testing.assert_array_equal(nb1, nb2)
@@ -515,9 +552,6 @@ class CommGraph:
 
         # return full indices
         return nb_idx + h_idx * N_out
-
-    def is_null(self):
-        return not (self.features and self.graph and self.per_ch_tables)
 
     def _gen_graph(self):
         '''
@@ -619,12 +653,13 @@ class CommGraphDataSet(CommGraph):
 
         # always generate graph on creation for now
         #self._gen_graph()
-        self.gen_graph()
+        #self.gen_graph()
         self.minibatch_sampler = RandomVectorSampler(p.graph_l.n_total,
                                                      p.graph_l.n_nodes_pm)
         self.negative_sampler = RandomVectorSampler(p.graph_l.n_out,
                                                     p.graph_l.n_neg_samp *
                                                     p.graph_l.n_neighbors )
+
 
     def __repr__(self):
         return "Communication Graph Iterable"
@@ -642,6 +677,7 @@ class CommGraphDataSet(CommGraph):
 
     def gen_batch_data(self):
         '''generate batch data'''
+        assert not self.is_null(), 'no graph present'
         p = self.p
         mbatch_sampler = self.minibatch_sampler
         #K = p.graph_l.n_neighbors
