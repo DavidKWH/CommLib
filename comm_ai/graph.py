@@ -6,8 +6,8 @@ import tensorflow as tf
 from functools import partial
 import os
 
-#from concurrent.futures import ThreadPoolExecutor
-#from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor
 
 from .core import QAMModulator
 from .core import Demodulator
@@ -20,10 +20,12 @@ from .core import bv2dec
 ################################################################################
 # module initialization
 ################################################################################
-#cores = os.sched_getaffinity(0)
-#num_cores = len(cores)
-#print(f'num cores available: {num_cores}')
+cores = os.sched_getaffinity(0)
+num_cores = len(cores)
+print(f'num cores available: {num_cores}')
+print(f'using subprocesses for neighbor search')
 #SelectedExecutor = ThreadPoolExecutor
+SelectedExecutor = ProcessPoolExecutor
 
 ################################################################################
 # support functions
@@ -125,9 +127,90 @@ class NeighborFinder:
         assert(per_ch_table)
         self.p = p
         self.per_ch_table = per_ch_table
+        self.radius = self.init_radius(per_ch_table[0])
+
+    def init_radius(self, y_tsr):
+        p = self.p
+        K = p.graph_l.n_neighbors
+        Nt = p.graph_l.n_out
+
+        y_tsr = np.squeeze(y_tsr)
+        d = y_tsr.shape[-1]
+
+        # limit search radius for neighbors
+        # NOTE: the real bottleneck is sorting
+        # NOTE: assume samples are distributed uniformly over a sphere
+        #       for radius approximation - highly heruistic...
+        vecnorm = partial(np.linalg.norm, ord=None, axis=1)
+        y_norm_max = np.max(vecnorm(y_tsr))
+        ce = 4./3.*np.pi # scale factor for volume of sphere
+        rho_0 = y_norm_max / (Nt/ce)**(1./d) * K
+        #print('rho_0', rho_0)
+
+        return rho_0
+
+    def find(self, y_vec):
+        '''returns the full indices of K nearest neighbors'''
+        # FIXME: add radius adaptation
+        p = self.p
+        K = p.graph_l.n_neighbors
+        N_out = p.N_out
+
+        # get per channel data
+        rx_data = self.per_ch_table
+        # tuples (y_tsr, sym_tsr, sym_vec)
+        y_tsr = rx_data[0]
+
+        # compute distance in y-space
+        y_vec = np.squeeze(y_vec)
+        y_tsr = np.squeeze(y_tsr)
+        y_diff = y_tsr - y_vec[None,:]
+        yd_norm = np.linalg.norm(y_diff, axis=1)
+
+        ''' START: adjust search space '''
+        # load search radius
+        rho = self.radius
+        #print('rho', rho)
+        yd_ind = yd_norm < rho
+        if np.sum(yd_ind) > 256:
+            # shrink search space
+            rho /= 2.
+            yd_ind = yd_norm < rho
+            #print(f'rho {rho*2:.4f} => {rho:.4f}')
+        while np.sum(yd_ind) <= K:
+            # enlarge serach space
+            rho *= 2.
+            assert not np.isinf(rho), "rho -> inf"
+            yd_ind = yd_norm < rho
+            #print(f'rho {rho/2:.4f} => {rho:.4f}')
+        yd_idx = np.where(yd_ind)[0]
+        ycr_norm = yd_norm[yd_idx]
+        # sort list (index)
+        ycr_idx = np.argsort(ycr_norm)
+        yds_idx = yd_idx[ycr_idx]
+        # update radius
+        self.radius = rho
+        ''' END: adjust search space '''
+
+        # return indices for K-NN
+        idx = np.arange(K)+1
+        nb_idx = yds_idx[idx]
+
+        # return full indices
+        return nb_idx
+
+
+class FullNeighborFinder:
+    '''
+    Return the neighbors of a given node
+    '''
+    def __init__(self, p, per_ch_tables):
+        assert(per_ch_tables)
+        self.p = p
+        self.per_ch_tables = per_ch_tables
 
         # initialize radii
-        self.radii = [self.init_radius(rx_data[0]) for rx_data in per_ch_table]
+        self.radii = [self.init_radius(rx_data[0]) for rx_data in per_ch_tables]
 
     def init_radius(self, y_tsr):
         p = self.p
@@ -157,7 +240,7 @@ class NeighborFinder:
         N_out = p.N_out
 
         # get per channel data
-        rx_data = self.per_ch_table[h_idx]
+        rx_data = self.per_ch_tables[h_idx]
         # tuples (y_tsr, sym_tsr, sym_vec)
         y_tsr = rx_data[0]
 
@@ -202,6 +285,23 @@ class NeighborFinder:
 ################################################################################
 # define classes
 ################################################################################
+def gen_neighbor_table(p, rx_out):
+    '''
+    one unit of work for thread/process scheduling
+    NOTE: run as standalone function to avoid
+          pickling error via subprocessing
+    '''
+    #p = self.p
+    neighbor_finder = NeighborFinder(p, rx_out)
+    # rx_out = (y_tsr, sym_tsr, sym_vec, n_var_tsr)
+    y_tsr =  rx_out[0]
+
+    # lookup K nearest-neighbors
+    nb_idx_list = [ neighbor_finder.find(y_vec) for y_vec in y_tsr ]
+    nb_idx_mat = np.array(list(nb_idx_list))
+
+    return nb_idx_mat
+
 class CommGraph:
     '''
     Generate channel data for training
@@ -223,7 +323,7 @@ class CommGraph:
 
         self.features
         self.graph
-        self.per_ch_table
+        self.per_ch_tables
     '''
     def __init__(self, p, llr_output=False,
                           symbol_output=False,
@@ -248,7 +348,7 @@ class CommGraph:
         # internal store
         self.features = None
         self.graph = None
-        self.per_ch_table = None
+        self.per_ch_tables = None
 
     def __repr__(self):
         return "Communication Graph"
@@ -268,7 +368,90 @@ class CommGraph:
 
         return y_tsr, sym_tsr, sym_vec, n_var_tsr
 
-    def gen_source_data(self):
+    def _gen_neighbor_table(self, rx_out):
+        '''
+        one unit of work for thread/process scheduling
+        '''
+        p = self.p
+        neighbor_finder = NeighborFinder(p, rx_out)
+        # rx_out = (y_tsr, sym_tsr, sym_vec, n_var_tsr)
+        y_tsr =  rx_out[0]
+
+        # lookup K nearest-neighbors
+        nb_idx_list = [ neighbor_finder.find(y_vec) for y_vec in y_tsr ]
+        nb_idx_mat = np.array(list(nb_idx_list))
+
+        return nb_idx_mat
+
+    def gen_graph(self):
+        '''
+        try place everything in memory (not scalable)
+        '''
+        p = self.p
+        ch = self.channel
+        rx_gen = self.gen_channel_output
+        #nb_gen = self._gen_neighbor_table
+        nb_gen = partial( gen_neighbor_table, p )
+        N_ch = p.N_ch
+        N_out = p.N_out
+        N_tx = p.N_tx
+        N_rx = p.N_rx
+
+        # generate channel realizations
+        h_tsr = ch.gen_channels(N_ch)
+        h_mat_list = list(h_tsr)
+
+        # generate per channel dataset
+        # returns list of tables (output from rx_gen())
+        # each table is itself a list of tensors y_tsr, sym_tsr, sym_vec, n_var_tsr
+        rx_out_tables = [rx_gen(N_out, h_mat) for h_mat in h_mat_list]
+        # save per channel tables
+        self.per_ch_tables = rx_out_tables
+
+        # find neighbors per rx_out_table
+        '''
+         Performance summary:
+          * approx. 2x speed up using ProcessPool over 8 cores
+          * presumably due to subprocess overhead and memory contention
+        '''
+        #neighbor_tables = [nb_gen(rx_out) for rx_out in rx_out_tables]
+        with SelectedExecutor(max_workers=num_cores) as executor:
+            proc_iter  = executor.map( nb_gen, rx_out_tables )
+        neighbor_tables = list(proc_iter)
+
+        #for nb1, nb2 in zip(neighbor_tables, nb_idx_list):
+        #    np.testing.assert_array_equal(nb1, nb2)
+
+        ################################################################################
+        # merging all tables into tensors
+        ################################################################################
+        # concatenate neighbor tables
+        nb_idx_mat = concat_sublist_elems(neighbor_tables)
+
+        # contencate per channel data
+        rx_out_list = concat_sublist_elems(rx_out_tables)
+        y_out_tsr, sym_out_tsr, sym_out_vec, n_var_tsr = rx_out_list
+
+        # full channel tensor
+        h_out_tsr = np.repeat(h_tsr, N_out, axis=0)
+
+        # full channel index
+        h_idx = np.arange(N_ch)
+        h_out_idx = np.repeat(h_idx, N_out, axis=0)
+
+        # collect edge features
+        features = (h_out_idx, h_out_tsr, y_out_tsr, sym_out_tsr, sym_out_vec, n_var_tsr)
+
+        # save graph and features
+        self.features = features
+        self.graph = nb_idx_mat
+
+        print('graph generated')
+
+        # return contcatenated features
+        #return h_out_idx, h_out_tsr, y_out_tsr, sym_out_tsr, sym_out_vec, n_var_tsr
+
+    def _gen_source_data(self):
         '''
         try place everything in memory (not scalable)
         '''
@@ -288,7 +471,7 @@ class CommGraph:
         # returns list of tuples (y_tsr, sym_tsr, sym_vec)
         rx_out_list = [rx_gen(N_out, h_mat) for h_mat in h_mat_list]
         # save per channel table
-        self.per_ch_table = rx_out_list
+        self.per_ch_tables = rx_out_list
 
         # contencate per channel data
         rx_out_list = concat_sublist_elems(rx_out_list)
@@ -312,7 +495,7 @@ class CommGraph:
         N_out = p.N_out
 
         # get per channel data
-        rx_data = self.per_ch_table[h_idx]
+        rx_data = self.per_ch_tables[h_idx]
         # tuples (y_tsr, sym_tsr, sym_vec)
         y_tsr = rx_data[0]
 
@@ -334,9 +517,9 @@ class CommGraph:
         return nb_idx + h_idx * N_out
 
     def is_null(self):
-        return not (self.features and self.graph and self.per_ch_table)
+        return not (self.features and self.graph and self.per_ch_tables)
 
-    def gen_graph(self):
+    def _gen_graph(self):
         '''
         generate a comm graph
 
@@ -349,13 +532,13 @@ class CommGraph:
         K = p.graph_l.n_neighbors
 
         # generate source data (features)
-        source = self.gen_source_data()
+        source = self._gen_source_data()
 
         # create neighbor finder
         if self.neighbor_finder is None:
-            assert(self.per_ch_table)
+            assert(self.per_ch_tables)
             print('creating neighbor finder instance')
-            self.neighbor_finder = NeighborFinder(p, self.per_ch_table)
+            self.neighbor_finder = FullNeighborFinder(p, self.per_ch_tables)
             neighbor_finder = self.neighbor_finder
 
         # generate K-NN data (edges)
@@ -385,6 +568,7 @@ class CommGraph:
         self.features = source
         self.graph = nb_idx_mat
 
+    # these functions are used during training
     def get_neighbor_features(self, node_idx):
         '''return tuple of neighbor features'''
 
@@ -434,6 +618,7 @@ class CommGraphDataSet(CommGraph):
         self.in_transform = transform
 
         # always generate graph on creation for now
+        #self._gen_graph()
         self.gen_graph()
         self.minibatch_sampler = RandomVectorSampler(p.graph_l.n_total,
                                                      p.graph_l.n_nodes_pm)
