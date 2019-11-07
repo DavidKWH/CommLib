@@ -24,11 +24,13 @@ from googleapiclient.http import MediaFileUpload
 ################################################################################
 # module initialization
 ################################################################################
+# google drive root folder
+rootdir = 'octopus'
+
 # If modifying these scopes, delete the file token.pickle.
 SCOPES = ['https://www.googleapis.com/auth/drive']
 
 # look for user local data
-rootdir = 'octopus'
 dirname = os.path.join(os.environ['HOME'], '.octopus')
 
 token_name = 'token.pickle'
