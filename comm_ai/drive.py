@@ -1,5 +1,5 @@
 '''
-high-level interface to google drive 
+high-level interface to google drive
 
 Design:
     per user authentication setup
@@ -8,12 +8,15 @@ Design:
         credentials.json
         token.pickle
 '''
-import pickle
 import os
+import mimetypes
+import pickle
 from sys import exit
 
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
+
+from googleapiclient import errors
 from googleapiclient.discovery import build
 # file management
 from googleapiclient.http import MediaFileUpload
@@ -82,7 +85,7 @@ def split_all(path):
 # functions
 ################################################################################
 def get_folder(fname, parent):
-    ''' 
+    '''
     check if folder exists, if so returns folder id,
     else return None
     '''
@@ -112,7 +115,7 @@ def get_folder(fname, parent):
         return None
 
 def make_dirs(fnames, exist_ok=True):
-    ''' 
+    '''
     make all folders specified in folders
     if they do not already exist
     '''
@@ -144,26 +147,79 @@ def create_folder(fname, parent):
 
     return folder_id
 
-def write_file(filepath, parent, text=False):
+def get_file(fname, parent):
+    '''
+    return file_id if it exists,
+    otherwise return None
+    '''
+    assert parent, 'parent not set'
+    not_trash_query = "trashed=false"
+    folder_query = f"'{parent}' in parents"
+    name_query = f"name='{fname}'"
+
+    query = f"{folder_query} and {name_query} and {not_trash_query}"
+    fields = 'nextPageToken, files(id, name)'
+
+    response = service.files().list(q=query,
+                                    spaces='drive',
+                                    fields=fields).execute()
+
+    for file in response.get('files', []):
+        print (f"Found file: {file.get('name')}, {file.get('id')}")
+
+    file_list = [ (file.get('name'), file. get('id'))
+                    for file in response.get('files', []) ]
+
+    if file_list:
+        assert len(file_list) == 1, 'more than one file found'
+        file_id = file_list[0][1]
+        return file_id
+    else:
+        return None
+
+def write_file(filepath, parent=None, text=False, overwrite=True):
+    '''
+    filepath should be a valid file
+    replace file if overwrite is True
+
+    assumptions:
+        filepath should be a valid file
+        write to root directory if parent not given
+    '''
+    assert os.path.isfile(filepath), f'{filepath} must be a valid file'
+    if not parent: parent='root'
 
     fname = os.path.basename(filepath)
-    mime_type = 'text/plain' if text else 'application/octet-stream'
+    file_ext = os.path.splitext(fname)[1]
 
-    file_metadata = {
+    # lookup mime type
+    mimetypes.init()
+    mime_type = mimetypes.types_map.get(file_ext, 'application/octet-stream')
+    #mime_type = 'text/plain' if text else 'application/octet-stream'
+
+    metadata = {
         'name': fname,
-        'parents': [parent]
     }
 
-    media = MediaFileUpload(filepath,
-                            mimetype=mime_type,
-                            resumable=True)
+    media = MediaFileUpload(filepath, mimetype=mime_type, resumable=True)
 
-    file = service.files().create(body=file_metadata,
-                                  media_body=media,
-                                  fields='id').execute()
+    file_id = get_file(fname, parent)
 
-    file_id = file.get('id')
+    if file_id:
+        print('File exists!')
+        file = service.files().update(body=metadata,
+                                      media_body=media,
+                                      fileId=file_id).execute()
+    else:
+        metadata['parents'] = [parent]
+        file = service.files().create(body=metadata,
+                                      media_body=media,
+                                      fields='id').execute()
+        file_id = file.get('id')
+
     print(f'File ID: {file_id}')
+
+    return file_id
 
 ################################################################################
 # user API functions
