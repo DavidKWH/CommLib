@@ -14,14 +14,28 @@ import mimetypes
 import pickle
 from sys import exit
 
-from google_auth_oauthlib.flow import InstalledAppFlow
-from google.auth.transport.requests import Request
-
 from googleapiclient import errors
 from googleapiclient.discovery import build
 # file management
 from googleapiclient.http import MediaFileUpload
 from googleapiclient.http import MediaInMemoryUpload
+# oauth related
+from httplib2 import Http
+from oauth2client import file, client, tools
+
+def get_authenticated(SCOPES, credential_file='credentials.json',
+                  token_file='token.json', service_name='drive',
+                  api_version='v3'):
+    # The file token.json stores the user's access and refresh tokens, and is
+    # created automatically when the authorization flow completes for the first
+    # time.
+    store = file.Storage(token_file)
+    creds = store.get()
+    if not creds or creds.invalid:
+        flow = client.flow_from_clientsecrets(credential_file, SCOPES)
+        creds = tools.run_flow(flow, store)
+    service = build(service_name, api_version, http=creds.authorize(Http()))
+    return service
 
 ################################################################################
 # module initialization
@@ -41,37 +55,17 @@ SCOPES = ['https://www.googleapis.com/auth/drive']
 # look for user local data
 dirname = os.path.join(os.environ['HOME'], '.octopus')
 
-token_name = 'token.pickle'
+token_name = 'token.json'
 token_name = os.path.join(dirname, token_name)
 cred_name = 'credentials.json'
 cred_name = os.path.join(dirname, cred_name)
 
 assert os.path.exists(cred_name), f'missing credentials in {dirname}'
+#assert os.path.exists(token_name), f'missing token storage in {dirname}'
 
-creds = None
-# The file token.pickle stores the user's access and refresh tokens, and is
-# created automatically when the authorization flow completes for the first
-# time.
-if os.path.exists(token_name):
-    with open(token_name, 'rb') as token:
-        creds = pickle.load(token)
-
-# If there are no (valid) credentials available, let the user log in.
-if not creds or not creds.valid:
-    if creds and creds.expired and creds.refresh_token:
-        # refresh token
-        creds.refresh(Request())
-    else:
-        # send user to log in screen
-        flow = InstalledAppFlow.from_client_secrets_file(
-            cred_name, SCOPES)
-        creds = flow.run_local_server(port=0)
-    # save the credentials for the next run
-    with open(token_name, 'wb') as token:
-        pickle.dump(creds, token)
-
-# create service
-service = build('drive', 'v3', credentials=creds)
+service = get_authenticated(SCOPES,
+                            credential_file=cred_name,
+                            token_file=token_name)
 
 ################################################################################
 # support functions
@@ -348,9 +342,9 @@ def save_to_file(dst_filepath, buf, text=True):
 
     file_id = get_file(dst_basename, folder)
     if file_id:
-        update_bytes(buf, basename, file_id, text=text)
+        update_bytes(buf, dst_basename, file_id, text=text)
     else:
-        create_bytes(buf, basename, folder, text=text)
+        create_bytes(buf, dst_basename, folder, text=text)
 
 def save_folder(src_filepath, dst_filepath=None, recursive=True):
     ''' recursively save of the contents in filepath '''
