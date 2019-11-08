@@ -20,6 +20,7 @@ from googleapiclient import errors
 from googleapiclient.discovery import build
 # file management
 from googleapiclient.http import MediaFileUpload
+from googleapiclient.http import MediaInMemoryUpload
 
 ################################################################################
 # module initialization
@@ -179,12 +180,12 @@ def get_file(fname, parent):
     else:
         return None
 
-def write_file(filepath, parent=None, text=False, overwrite=True):
+def write_file(filepath, parent=None, mime_type=None, overwrite=True):
     '''
-    filepath should be a valid file
-    replace file if overwrite is True
+    write file to filepath, replace file if overwrite is True.
 
     assumptions:
+        Infer mime type if not specified.
         filepath should be a valid file
         write to root directory if parent not given
     '''
@@ -195,9 +196,9 @@ def write_file(filepath, parent=None, text=False, overwrite=True):
     file_ext = os.path.splitext(fname)[1]
 
     # lookup mime type
-    mimetypes.init()
-    mime_type = mimetypes.types_map.get(file_ext, 'application/octet-stream')
-    #mime_type = 'text/plain' if text else 'application/octet-stream'
+    if not mime_type:
+        mimetypes.init()
+        mime_type = mimetypes.types_map.get(file_ext, 'application/octet-stream')
 
     metadata = {
         'name': fname,
@@ -223,11 +224,53 @@ def write_file(filepath, parent=None, text=False, overwrite=True):
 
     return file_id
 
+def write_bytes(buf, filepath, parent=None, text=True, overwrite=True):
+    '''
+    write buf to filepath, replace file if overwrite is True
+
+    assumptions:
+        write to root directory if parent not given
+    '''
+    #assert os.path.isfile(filepath), f'{filepath} must be a valid file'
+    if not parent: parent='root'
+
+    fname = os.path.basename(filepath)
+    #file_ext = os.path.splitext(fname)[1]
+
+    # lookup mime type
+    #mimetypes.init()
+    #mime_type = mimetypes.types_map.get(file_ext, 'application/octet-stream')
+    mime_type = 'text/plain' if text else 'application/octet-stream'
+
+    metadata = {
+        'name': fname,
+    }
+
+    media = MediaInMemoryUpload(buf, mimetype=mime_type, resumable=True)
+
+    file_id = get_file(fname, parent)
+
+    if file_id:
+        print('File exists!')
+        file = service.files().update(body=metadata,
+                                      media_body=media,
+                                      fileId=file_id).execute()
+    else:
+        metadata['parents'] = [parent]
+        file = service.files().create(body=metadata,
+                                      media_body=media,
+                                      fields='id').execute()
+        file_id = file.get('id')
+
+    print(f'File ID: {file_id}')
+
+    return file_id
+
 ################################################################################
 # user API functions
 ################################################################################
-def save_file(filepath, text=False):
-    ''' user interface for writing to google drive '''
+def save_file(filepath, mimi_type=None):
+    ''' upload file to google drive '''
     assert not os.path.isabs(filepath), 'support relative path only'
     filepath = os.path.join(rootdir, filepath)
     print(f'saving file to gdrive: {filepath}')
@@ -240,4 +283,22 @@ def save_file(filepath, text=False):
     print(dirs)
     folder = make_dirs(dirs)
     write_file(basename, folder)
+
+def save_to_file(filepath, buf, text=True):
+    ''' save buf to a remote file directly '''
+    assert not os.path.isabs(filepath), 'support relative path only'
+    filepath = os.path.join(rootdir, filepath)
+    print(f'saving buffer to gdrive: {filepath}')
+
+    basename = os.path.basename(filepath)
+    dirname = os.path.dirname(filepath)
+    dirname = os.path.normpath(dirname)
+
+    dirs = split_all(dirname)
+    print(dirs)
+    folder = make_dirs(dirs)
+
+    if text: buf = buf.encode()
+    write_bytes(buf, basename, folder)
+
 
