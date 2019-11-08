@@ -9,6 +9,7 @@ Design:
         token.pickle
 '''
 import os
+import glob
 import mimetypes
 import pickle
 from sys import exit
@@ -25,6 +26,12 @@ from googleapiclient.http import MediaInMemoryUpload
 ################################################################################
 # module initialization
 ################################################################################
+# initialize mimetypes
+mimetypes.init()
+mimetypes.add_type('application/python-pickle', '.pickle')
+mimetypes.add_type('application/numpy-npy', '.npy')
+mimetypes.add_type('application/numpy-npz', '.npz')
+
 # google drive root folder
 rootdir = 'octopus'
 
@@ -180,9 +187,9 @@ def get_file(fname, parent):
     else:
         return None
 
-def write_file(filepath, parent=None, mime_type=None, overwrite=True):
+def create_file(filepath, parent=None, mime_type=None):
     '''
-    write file to filepath, replace file if overwrite is True.
+    create file at filepath
 
     assumptions:
         Infer mime type if not specified.
@@ -197,41 +204,56 @@ def write_file(filepath, parent=None, mime_type=None, overwrite=True):
 
     # lookup mime type
     if not mime_type:
-        mimetypes.init()
         mime_type = mimetypes.types_map.get(file_ext, 'application/octet-stream')
 
-    metadata = {
-        'name': fname,
-    }
+    metadata = {}
+    metadata['name'] = fname
+    metadata['parents'] = [parent]
 
     media = MediaFileUpload(filepath, mimetype=mime_type, resumable=True)
 
-    file_id = get_file(fname, parent)
+    file = service.files().create(body=metadata,
+                                  media_body=media,
+                                  fields='id').execute()
+    print(f'File ID: {file["id"]}')
+    return file['id']
 
-    if file_id:
-        print('File exists!')
-        file = service.files().update(body=metadata,
-                                      media_body=media,
-                                      fileId=file_id).execute()
-    else:
-        metadata['parents'] = [parent]
-        file = service.files().create(body=metadata,
-                                      media_body=media,
-                                      fields='id').execute()
-        file_id = file.get('id')
+def update_file(filepath, file_id, mime_type=None):
+    '''
+    update file with file_id, using contents from filepath
 
-    print(f'File ID: {file_id}')
+    assumptions:
+        Infer mime type if not specified.
+        filepath should be a valid file
+        file_id must be specified
+    '''
+    assert os.path.isfile(filepath), f'{filepath} must be a valid file'
+    assert file_id, 'must have valid file_id'
 
+    fname = os.path.basename(filepath)
+    file_ext = os.path.splitext(fname)[1]
+
+    # lookup mime type
+    if not mime_type:
+        mime_type = mimetypes.types_map.get(file_ext, 'application/octet-stream')
+
+    metadata = {}
+    metadata['name'] = fname
+
+    media = MediaFileUpload(filepath, mimetype=mime_type, resumable=True)
+
+    file = service.files().update(body=metadata,
+                                  media_body=media,
+                                  fileId=file_id).execute()
     return file_id
 
-def write_bytes(buf, filepath, parent=None, text=True, overwrite=True):
+def create_bytes(buf, filepath, parent=None, text=True):
     '''
-    write buf to filepath, replace file if overwrite is True
+    create filepath and fill content with buf.
 
     assumptions:
         write to root directory if parent not given
     '''
-    #assert os.path.isfile(filepath), f'{filepath} must be a valid file'
     if not parent: parent='root'
 
     fname = os.path.basename(filepath)
@@ -242,63 +264,114 @@ def write_bytes(buf, filepath, parent=None, text=True, overwrite=True):
     #mime_type = mimetypes.types_map.get(file_ext, 'application/octet-stream')
     mime_type = 'text/plain' if text else 'application/octet-stream'
 
-    metadata = {
-        'name': fname,
-    }
+    metadata = {}
+    metadata['name'] = fname
+    metadata['parents'] = [parent]
 
     media = MediaInMemoryUpload(buf, mimetype=mime_type, resumable=True)
 
-    file_id = get_file(fname, parent)
+    file = service.files().create(body=metadata,
+                                  media_body=media,
+                                  fields='id').execute()
+    print(f'File ID: {file["id"]}')
+    return file['id']
 
-    if file_id:
-        print('File exists!')
-        file = service.files().update(body=metadata,
-                                      media_body=media,
-                                      fileId=file_id).execute()
-    else:
-        metadata['parents'] = [parent]
-        file = service.files().create(body=metadata,
-                                      media_body=media,
-                                      fields='id').execute()
-        file_id = file.get('id')
+def update_bytes(buf, filepath, file_id, text=True):
+    '''
+    update filepath content with buf
 
-    print(f'File ID: {file_id}')
+    assumptions:
+        file_id must be specified
+    '''
+    assert file_id, 'must have valid file_id'
+
+    fname = os.path.basename(filepath)
+    #file_ext = os.path.splitext(fname)[1]
+
+    # lookup mime type
+    #mimetypes.init()
+    #mime_type = mimetypes.types_map.get(file_ext, 'application/octet-stream')
+    mime_type = 'text/plain' if text else 'application/octet-stream'
+
+    metadata = {}
+    metadata['name'] = fname
+
+    media = MediaInMemoryUpload(buf, mimetype=mime_type, resumable=True)
+
+    file = service.files().update(body=metadata,
+                                  media_body=media,
+                                  fileId=file_id).execute()
 
     return file_id
 
 ################################################################################
 # user API functions
 ################################################################################
-def save_file(filepath, mimi_type=None):
+def save_file(src_filepath, dst_filepath=None, mimi_type=None):
     ''' upload file to google drive '''
-    assert not os.path.isabs(filepath), 'support relative path only'
-    filepath = os.path.join(rootdir, filepath)
-    print(f'saving file to gdrive: {filepath}')
+    if not dst_filepath: dst_filepath = src_filepath
+    assert not os.path.isabs(dst_filepath), 'support relative path only'
+    assert os.path.isfile(src_filepath), f'{src_filepath} must be a valid file'
+    # append root directory to dst_filepath
+    dst_filepath = os.path.join(rootdir, dst_filepath)
+    print(f'saving file to gdrive: {dst_filepath}')
 
-    basename = os.path.basename(filepath)
-    dirname = os.path.dirname(filepath)
-    dirname = os.path.normpath(dirname)
+    dst_basename = os.path.basename(dst_filepath)
+    dst_dirname = os.path.dirname(dst_filepath)
+    dst_dirname = os.path.normpath(dst_dirname)
 
-    dirs = split_all(dirname)
+    dirs = split_all(dst_dirname)
     print(dirs)
     folder = make_dirs(dirs)
-    write_file(basename, folder)
 
-def save_to_file(filepath, buf, text=True):
+    file_id = get_file(dst_basename, folder)
+    if file_id:
+        update_file(src_filepath, file_id)
+    else:
+        create_file(src_filepath, folder)
+
+def save_to_file(dst_filepath, buf, text=True):
     ''' save buf to a remote file directly '''
-    assert not os.path.isabs(filepath), 'support relative path only'
-    filepath = os.path.join(rootdir, filepath)
-    print(f'saving buffer to gdrive: {filepath}')
+    assert not os.path.isabs(dst_filepath), 'support relative path only'
+    dst_filepath = os.path.join(rootdir, dst_filepath)
+    print(f'saving buffer to gdrive: {dst_filepath}')
 
-    basename = os.path.basename(filepath)
-    dirname = os.path.dirname(filepath)
-    dirname = os.path.normpath(dirname)
+    dst_basename = os.path.basename(dst_filepath)
+    dst_dirname = os.path.dirname(dst_filepath)
+    dst_dirname = os.path.normpath(dst_dirname)
 
-    dirs = split_all(dirname)
+    dirs = split_all(dst_dirname)
     print(dirs)
     folder = make_dirs(dirs)
 
     if text: buf = buf.encode()
-    write_bytes(buf, basename, folder)
+
+    file_id = get_file(dst_basename, folder)
+    if file_id:
+        update_bytes(buf, basename, file_id, text=text)
+    else:
+        create_bytes(buf, basename, folder, text=text)
+
+def save_folder(src_filepath, dst_filepath=None, recursive=True):
+    ''' recursively save of the contents in filepath '''
+    if not dst_filepath: dst_filepath = src_filepath
+    assert os.path.isdir(src_filepath), f'{src_filepath} must be a folder'
+    assert not (dst_filepath.startswith('.') or dst_filepath.startswith('..')), \
+           "dst_filepath cannot contain '.' or '..'"
+
+    # recurse thru all files in src folder
+    paths = glob.glob(f"{src_filepath}/**", recursive=True)
+    for src_path in paths:
+        dst_path = src_path.replace(src_filepath, dst_filepath, 1)
+        print(f'copying {src_path} --> {dst_path}')
+
+        if os.path.isdir(src_path):
+            # skip, this will be taken care of in save_file()
+            print('folder, skipping')
+            pass
+        elif os.path.isfile(src_path):
+            save_file(src_path, dst_path)
+        else:
+            raise RuntimeError(f'cannot handle special files: {src_path}')
 
 
