@@ -7,6 +7,12 @@ import socket
 from datetime import datetime
 from hashlib import blake2b
 
+#def task_id():
+#    return node_id()
+
+def message_id():
+    return node_id()
+
 def node_id():
     '''
     generate node_id from the following sources
@@ -16,7 +22,6 @@ def node_id():
      * hostname
      * urandom
     '''
-
     mac_addr = uuid.getnode()
     now = datetime.utcnow()
     host_id = socket.gethostname()
@@ -29,3 +34,10 @@ def node_id():
     h.update(rnd_num)
     return h.hexdigest()
 
+def hash_fn(buf):
+    '''
+    hash byte buffer for consistency check
+    '''
+    h = blake2b(digest_size=32)
+    h.update(buf)
+    return h.hexdigest()

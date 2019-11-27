@@ -8,20 +8,18 @@ very heterogeneous environment.
 Queues are implemented with file structure:
 
 For messages:
-
     queues/from_runners/messages...
            to_runners/messages...
 
 Message storage:
-
     storage/from_runners/blobs...
             to_runners/blobs...
 
 For task management:
+    tasks/task_1...n
 
-    queues/running/tasks...
-           complete/tasks...
-           restart/tasks...
+Model output:
+    models/blobs...
 
 Mutexes queue (push) synchronization:
 
@@ -90,6 +88,31 @@ subprocess.Popen(["virtualenv1/bin/python", "my_script.py"])
 subprocess.Popen(["virtualenv2/bin/python", "my_other_script.py"])
 '''
 
+from .messages import RunTaskMessage
+
+def submit(venv = 'venv-tf2',
+           script = '',
+           args = [],
+           input = []):
+    ''' high level function for task submission'''
+
+    assert script, 'missing script argument'
+
+    msg = RunTaskMessage(venv, script, args, input)
+
+    # submit to queue
+    # q.submit(msg)
+
+    # construct task state
+    state = { 'task_id': task_id }
+
+    return state
+
+
+################################################################################
+# OLD STUFF
+################################################################################
+
 class TaskInitiator:
     '''
     The main user facing class
@@ -109,11 +132,6 @@ class TaskRunner:
     '''
     def __init__(self):
         pass
-
-
-################################################################################
-# OLD STUFF
-################################################################################
 
 ################################################################################
 # define sendable/storable objects
