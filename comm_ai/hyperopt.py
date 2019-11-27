@@ -52,6 +52,9 @@ import itertools as itools
 from collections import Iterable
 from sys import exit
 
+from comm_ai import drive
+from comm_ai.octopus import TaskInitiator
+
 ################################################################################
 # support functions
 ################################################################################
@@ -109,7 +112,8 @@ def run_hyperopt_task(script,
     nested_vals.extend(sweeps.values())
     for d in pairs:
         nested_keys.append( d.keys() )
-        nested_vals.append( zip( *d.values() ) )
+        tuples = list( zip(*d.values()) )
+        nested_vals.append( tuples )
     #print('nested_keys =', nested_keys)
     #print('nested_vals =', nested_vals)
     keys = list(flatten_r(nested_keys))
@@ -169,4 +173,120 @@ def run_hyperopt_task(script,
             fp.write(f'command: {cmd_str}\n\n')
             fp.write(f'overrides: {overrides_json}\n\n')
             fp.write(state.stdout)
+
+################################################################################
+# remote task submission
+################################################################################
+def run_hyperopt_task_remote(script,
+                      outdir,
+                      mode='local',
+                      #mode='remote',
+                      venv='venv-tf2',
+                      args=[],
+                      name='sweep_hyperparam',
+                      dry_run=False,
+                      overrides={},
+                      sweeps={},
+                      pairs=[],
+                      ):
+    ''' submit remote task '''
+
+    if dry_run: print('NOTE: dry run, no tasks will be scheduled')
+
+    # ensure all lists (in pairs) have the same length
+    for d in pairs:
+        lens = [len(l) for l in d.values()]
+        assert len(set(lens)) == 1, 'lists must have the same length'
+
+    # script arguments
+    #args = []
+    #args.extend(['--options_from', 'stdin'])
+
+    # command string
+    #cmd_str = ' '.join(cmd)
+    #print(f'command string: {cmd_str}')
+
+    # ensure folder exists
+    os.makedirs(outdir, exist_ok=True)
+
+    # construct nested keys and values
+    nested_keys = []
+    nested_vals = []
+    nested_keys.extend(sweeps.keys())
+    nested_vals.extend(sweeps.values())
+    for d in pairs:
+        nested_keys.append( d.keys() )
+        tuples = list( zip(*d.values()) )
+        nested_vals.append( tuples )
+    #print('nested_keys =', nested_keys)
+    #print('nested_vals =', nested_vals)
+    keys = list(flatten_r(nested_keys))
+    #print('flatten keys =', keys)
+
+    # save permutation table to file
+    pname = '/'.join((outdir, name))
+    fname = pname + '.index'
+    with open(fname, 'w') as fp:
+        print('writing index table to file:', fname)
+
+        #for perm in itools.product(*nested_vals):
+        for i, perm in enumerate(itools.product(*nested_vals)):
+            vals = list(flatten_r(perm))
+            #print('perm =', perm)
+            #print('vals =', vals)
+            config = {}
+            [config.update({key: val}) for key, val in zip(keys, vals)]
+            config_str = f'{i:04d}: {config}'
+            fp.write(config_str + '\n')
+            print(config_str)
+
+    # save index file
+    drive.save_file(fname, mime_type='text/plain')
+
+    if dry_run: return
+
+    # get task initiator instance
+    task_queue = TaskInitiator()
+
+    # iterate over all possible permutations
+    # submit task to octopus
+    #for perm in itools.product(*nested_vals):
+    for i, perm in enumerate(itools.product(*nested_vals)):
+        vals = flatten_r(perm)
+        config = {}
+        [config.update({key: val}) for key, val in zip(keys, vals)]
+        print(config)
+
+        # append parameters to pdict
+        pdict = overrides.copy()
+        [pdict.update({opt: val}) for opt, val in config.items()]
+
+        # send json to stdin
+        overrides_json = json.dumps(pdict)
+        print(f'json input: {overrides_json}')
+
+        # construct task dict
+        task = {}
+        task['venv'] = venv
+        task['script'] = script
+        task['args'] = args
+        task['input'] = overrides_json
+
+        # submit to octopus
+        # TODO: implement function
+        state = task_queue.submit(**task)
+
+        # save log to file
+        pname = f'{name}_{i:04d}'
+        pname = '/'.join((outdir, pname))
+        fname = pname + '.log'
+        print('writing log to file:', fname)
+
+        with open(fname, 'w') as fp:
+            fp.write(f'task_id: {state.task_id}\n\n')
+            fp.write(f'task: {task}\n\n')
+            fp.write(f'overrides: {overrides_json}\n\n')
+
+        # save to google drive
+        drive.save_file(fname)
 

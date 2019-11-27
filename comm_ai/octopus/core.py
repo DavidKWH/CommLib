@@ -88,50 +88,67 @@ subprocess.Popen(["virtualenv1/bin/python", "my_script.py"])
 subprocess.Popen(["virtualenv2/bin/python", "my_other_script.py"])
 '''
 
+from hotqueue import HotQueue as RedisQueue
 from .messages import RunTaskMessage
 
-def submit(venv = 'venv-tf2',
-           script = '',
-           args = [],
-           input = []):
-    ''' high level function for task submission'''
-
-    assert script, 'missing script argument'
-
-    msg = RunTaskMessage(venv, script, args, input)
-
-    # submit to queue
-    # q.submit(msg)
-
-    # construct task state
-    state = { 'task_id': task_id }
-
-    return state
-
-
-################################################################################
-# OLD STUFF
-################################################################################
+class State:
+    def __init__(self, task_id):
+        self.task_id = task_id
 
 class TaskInitiator:
     '''
     The main user facing class
     '''
     def __init__(self):
-        pass
+        # setup job queue
+        #queue = HotQueue("myqueue", host="localhost", port=6379, db=0)
+        self.task_queue = RedisQueue("to_runners")
 
-    def submit(messages):
-        ''' 
-        returns an iterator of outstanding tasks
-        '''
-        return
+    def submit(self,
+               venv = 'venv-tf2',
+               script = '',
+               args = [],
+               input = []):
+        ''' high level function for task submission'''
+
+        assert script, 'missing script argument'
+
+        msg = RunTaskMessage(venv, script, args, input)
+
+        # submit to queue
+        self.task_queue.put(msg)
+
+        # construct task state
+        return State(msg.task_id)
 
 class TaskRunner:
     '''
     Receives tasks over message queue
     '''
     def __init__(self):
+        # setup job queue
+        #queue = HotQueue("myqueue", host="localhost", port=6379, db=0)
+        self.task_queue = RedisQueue("to_runners")
+
+    def main(self):
+        # main function
         pass
+
+    def start(self):
+        # create thread and runner indefinitely...
+
+        while True:
+            # get messsage from task_queue
+            msg = self.task_queue.get(block=True)
+            print('got msg:')
+            print(msg)
+            # run task
+            pass
+
+
+################################################################################
+# OLD STUFF
+################################################################################
 
 ################################################################################
 # define sendable/storable objects

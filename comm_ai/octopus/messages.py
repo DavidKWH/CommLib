@@ -39,6 +39,13 @@ class Message:
         ''' generate message id '''
         self.msg_id = message_id()
 
+    def __repr__(self):
+        #keys = sorted(self.__dict__)
+        keys = self.__dict__.keys()
+        items = ("{}={!r}".format(k, self.__dict__[k]) for k in keys)
+        return "{}({})".format(type(self).__name__, ", ".join(items))
+        #return "{}({})".format("RP", ", ".join(items))
+
 class RunTaskMessage(Message):
 
     def __init__(self, venv, spath, args, input):
