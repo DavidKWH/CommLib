@@ -4,9 +4,6 @@ high-level interface to google drive
 Design:
     per user authentication setup
     look inside $HOME for application data
-    includes:
-        credentials.json
-        token.pickle
 '''
 import os
 import glob
@@ -301,7 +298,7 @@ def update_bytes(buf, filepath, file_id, text=True):
 ################################################################################
 # user API functions
 ################################################################################
-def save_file(src_filepath, dst_filepath=None, mimi_type=None):
+def save_file(src_filepath, dst_filepath=None, mime_type=None):
     ''' upload file to google drive '''
     if not dst_filepath: dst_filepath = src_filepath
     assert not os.path.isabs(dst_filepath), 'support relative path only'
