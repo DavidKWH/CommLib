@@ -20,7 +20,7 @@ from .core import bv2dec
 ################################################################################
 # module initialization
 ################################################################################
-proc_local = True
+proc_local = False
 
 if not proc_local:
     cores = os.sched_getaffinity(0)
@@ -154,7 +154,6 @@ class NeighborFinder:
 
     def find(self, y_vec):
         '''returns the full indices of K nearest neighbors'''
-        # FIXME: add radius adaptation
         p = self.p
         K = p.graph_l.n_neighbors
         N_out = p.N_out
