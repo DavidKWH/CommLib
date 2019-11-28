@@ -88,12 +88,23 @@ subprocess.Popen(["virtualenv1/bin/python", "my_script.py"])
 subprocess.Popen(["virtualenv2/bin/python", "my_other_script.py"])
 '''
 
+import sys
+import json
+import subprocess
 from hotqueue import HotQueue as RedisQueue
+from comm_ai.drive import save_to_file
 from .messages import RunTaskMessage
 
 class State:
     def __init__(self, task_id):
         self.task_id = task_id
+
+class TaskGroup:
+    '''
+    Base class for Task handlers
+    Include common parameters and features
+    '''
+    pass
 
 class TaskInitiator:
     '''
@@ -118,8 +129,18 @@ class TaskInitiator:
         # submit to queue
         self.task_queue.put(msg)
 
+        # save to remote
+        task = msg.get_task()
+        task.status = 'submitted'
+        tname = '.'.join((task.task_id, task.status))
+        fname = '/'.join(('tasks', tname))
+        print('saving task to:', fname)
+        buf = json.dumps(task.as_dict(), indent=4)
+        save_to_file(fname, buf, text=True)
+
         # construct task state
         return State(msg.task_id)
+
 
 class TaskRunner:
     '''
@@ -134,6 +155,39 @@ class TaskRunner:
         # main function
         pass
 
+    def run_task(self, task):
+
+        # create script on disk
+        script = task.script
+        with open(script.name, 'w') as fp:
+            fp.write(script.content)
+        # create input file
+        options = task.input
+        with open(options.name, 'w') as fp:
+            fp.write(options.content)
+
+        cmd = []
+        cmd.append(sys.executable)
+        cmd.append(script.name)
+        cmd.extend(['--options_from', 'stdin'])
+        #cmd.extend(['--options_from', './options.json'])
+
+        # command string
+        cmd_str = ' '.join(cmd)
+        print(f'command string: {cmd_str}')
+
+        # invoke subprocess
+        state = subprocess.run(cmd,
+                               input=options.content,
+                               universal_newlines=True,
+                               #stdin=subprocess.PIPE,
+                               stdout=subprocess.PIPE,
+                               stderr=subprocess.STDOUT)
+
+        print('process completed')
+        return state
+
+
     def start(self):
         # create thread and runner indefinitely...
 
@@ -141,31 +195,34 @@ class TaskRunner:
             # get messsage from task_queue
             msg = self.task_queue.get(block=True)
             print('got msg:')
-            print(msg)
+            #print(msg)
+            print(msg.input)
+            print(msg.script.name)
+
+            # save to remote
+            task = msg.get_task()
+            task.status = 'started'
+            tname = '.'.join((task.task_id, task.status))
+            fname = '/'.join(('tasks', tname))
+            print('saving task to:', fname)
+            buf = json.dumps(task.as_dict(), indent=4)
+            save_to_file(fname, buf, text=True)
+
             # run task
-            pass
+            print('running task in subprocess...')
+            state = self.run_task(task)
 
+            print('task complete')
+            # save to remote
+            if state.returncode:
+                task.status = 'error'
+            else:
+                task.status = 'done'
+            # save stdout
+            task.stdout = state.stdout
+            tname = '.'.join((task.task_id, task.status))
+            fname = '/'.join(('tasks', tname))
+            print('saving task to:', fname)
+            buf = json.dumps(task.as_dict(), indent=4)
+            save_to_file(fname, buf, text=True)
 
-################################################################################
-# OLD STUFF
-################################################################################
-
-################################################################################
-# define sendable/storable objects
-################################################################################
-class File:
-    pass
-
-################################################################################
-# define rclone store
-################################################################################
-class Rclone:
-    pass
-
-################################################################################
-# main queue component
-################################################################################
-class Queue:
-    '''
-    '''
-    pass

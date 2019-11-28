@@ -317,9 +317,9 @@ def save_file(src_filepath, dst_filepath=None, mime_type=None):
 
     file_id = get_file(dst_basename, folder)
     if file_id:
-        update_file(src_filepath, file_id)
+        update_file(src_filepath, file_id, mime_type)
     else:
-        create_file(src_filepath, folder)
+        create_file(src_filepath, folder, mime_type)
 
 def save_to_file(dst_filepath, buf, text=True):
     ''' save buf to a remote file directly '''
