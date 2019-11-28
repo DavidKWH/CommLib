@@ -20,6 +20,8 @@ from .keras import PeriodicLRDecaySchedule
 from .keras import AperiodicLRDecaySchedule
 from .params import get_key
 from .params import has_key
+from .drive import save_file
+from .drive import save_folder
 
 ################################################################################
 # Support functions
@@ -68,7 +70,7 @@ def plot_model(p, model, name=None, show=False):
         plt.axis("image")
         plt.show()
 
-def save_model(p, model):
+def save_model(p, model, save_to_remote=False):
     ''' save model to file '''
 
     # get prefix
@@ -80,10 +82,14 @@ def save_model(p, model):
         print('writing params to file:', fname)
         json.dump(p.as_serializable(), fp, indent=4)
 
+    if save_to_remote: save_file(fname)
+
     # save model to file
     fname = pname + '.model'
-    print('saving model to file: ', fname)
+    print('saving model to folder: ', fname)
     tf.saved_model.save(model, fname)
+
+    if save_to_remote: save_folder(fname)
 
     # save weights for retrieval
     #fname = pname + '.weights'
