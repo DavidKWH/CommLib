@@ -2,9 +2,81 @@
 define messages
 '''
 import os
+import json
 
 from .util import message_id
 from .util import hash_fn
+
+################################################################################
+# help functions for object serialization
+################################################################################
+#def convert_to_dict(obj):
+#    """
+#    A function takes in a custom object and returns a dictionary representation of the object.
+#    This dict representation includes meta data such as the object's module and class names.
+#    """
+#
+#    #  Populate the dictionary with object meta data
+#    obj_dict = {
+#        "__class__": obj.__class__.__name__,
+#        "__module__": obj.__module__
+#    }
+#
+#    #  Populate the dictionary with object properties
+#    obj_dict.update(obj.__dict__)
+#
+#    return obj_dict
+
+def convert_to_rdict(obj):
+    """
+    A function takes in a custom object and returns a dictionary representation of the object.
+    This dict representation includes meta data such as the object's module and class names.
+    """
+
+    #  Populate the dictionary with object meta data
+    obj_dict = {
+        "__class__": obj.__class__.__name__,
+        "__module__": obj.__module__
+    }
+
+    #  Populate the dictionary with object properties
+    #  Construct nested dict recursively
+    for key, val in obj.__dict__.items():
+        if hasattr(val, "__class__") and hasattr(val, "__dict__"):
+            d = convert_to_rdict(val)
+            obj_dict.update({key: d})
+        else:
+            obj_dict.update({key: val})
+
+    return obj_dict
+
+
+def dict_to_obj(our_dict):
+    """
+    Function that takes in a dict and returns a custom object associated with the dict.
+    This function makes use of the "__module__" and "__class__" metadata in the dictionary
+    to know which object type to create.
+    """
+    if "__class__" in our_dict:
+        # Pop ensures we remove metadata from the dict to leave only the instance arguments
+        class_name = our_dict.pop("__class__")
+
+        # Get the module name from the dict and import it
+        module_name = our_dict.pop("__module__")
+
+        # We use the built in __import__ function since the module name is not yet known at runtime
+        module = __import__(module_name)
+
+        # Get the class from the module
+        class_ = getattr(module,class_name)
+
+        # Use dictionary unpacking to initialize the object
+        obj = class_(**our_dict)
+    else:
+        obj = our_dict
+
+    return obj
+
 
 ################################################################################
 # helper classes
@@ -13,12 +85,17 @@ class Script:
     '''
     NOTE: everything is stored as strings
     '''
-    def __init__(self, path):
-        assert os.path.isfile(path), f'path does not exist: {path}'
-        name = os.path.basename(path)
-        self.name = name
-        with open(path, 'r') as fp:
-            self.content = fp.read()
+    def __init__(self, path=None, content=None, name=None, hash=None):
+        if path:
+            assert os.path.isfile(path), f'path does not exist: {path}'
+            name = os.path.basename(path)
+            with open(path, 'r') as fp:
+                self.content = fp.read()
+                self.name = name
+        else:
+            self.name = name
+            self.content = content
+        # finally
         self.hash = hash_fn(self.content.encode())
 
     def __repr__(self):
@@ -26,16 +103,14 @@ class Script:
         items = ("{}={!r}".format(k, self.__dict__[k]) for k in keys)
         return "{}({})".format(type(self).__name__, ", ".join(items))
 
-    def as_dict(self):
-        return self.__dict__
 
 class Input:
-    def __init__(self, input, name='options'):
+    def __init__(self, content, name='options', hash=None):
         # add extension if not specified
         if not os.path.splitext(name)[1]:
             name = name + '.txt'
         self.name = name
-        self.content = input
+        self.content = content
         self.hash = hash_fn(self.content.encode())
 
     def __repr__(self):
@@ -43,11 +118,10 @@ class Input:
         items = ("{}={!r}".format(k, self.__dict__[k]) for k in keys)
         return "{}({})".format(type(self).__name__, ", ".join(items))
 
-    def as_dict(self):
-        return self.__dict__
-
-
 class Task:
+    '''
+    Task Info
+    '''
     def __init__(self, venv, args, input, script, task_id):
         self.venv = venv
         self.args = args
@@ -60,14 +134,11 @@ class Task:
         items = ("{}={!r}".format(k, self.__dict__[k]) for k in keys)
         return "{}({})".format(type(self).__name__, ", ".join(items))
 
-    def as_dict(self):
-        new_dict = {}
-        for key, val in self.__dict__.items():
-            if hasattr(val, 'as_dict'):
-                new_dict.update({key: val.as_dict()})
-            else:
-                new_dict.update({key: val})
-        return new_dict
+    def serialize(self):
+        return json.dumps(self, default=convert_to_rdict, indent=4)
+
+    def deserialize(self, buf):
+        return json.loads(buf, object_hook=dict_to_obj)
 
 ################################################################################
 # messages to runners

@@ -135,7 +135,7 @@ class TaskInitiator:
         tname = '.'.join((task.task_id, task.status))
         fname = '/'.join(('tasks', tname))
         print('saving task to:', fname)
-        buf = json.dumps(task.as_dict(), indent=4)
+        buf = task.serialize()
         save_to_file(fname, buf, text=True)
 
         # construct task state
@@ -193,6 +193,7 @@ class TaskRunner:
 
         while True:
             # get messsage from task_queue
+            print('waiting for msg...')
             msg = self.task_queue.get(block=True)
             print('got msg:')
             #print(msg)
@@ -205,7 +206,7 @@ class TaskRunner:
             tname = '.'.join((task.task_id, task.status))
             fname = '/'.join(('tasks', tname))
             print('saving task to:', fname)
-            buf = json.dumps(task.as_dict(), indent=4)
+            buf = task.serialize()
             save_to_file(fname, buf, text=True)
 
             # run task
@@ -223,6 +224,6 @@ class TaskRunner:
             tname = '.'.join((task.task_id, task.status))
             fname = '/'.join(('tasks', tname))
             print('saving task to:', fname)
-            buf = json.dumps(task.as_dict(), indent=4)
+            buf = task.serialize()
             save_to_file(fname, buf, text=True)
 
