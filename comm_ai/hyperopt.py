@@ -53,7 +53,7 @@ from collections import Iterable
 from sys import exit
 
 from comm_ai import drive
-from comm_ai.octopus import TaskInitiator
+from comm_ai.octopus import TaskSubmitter
 
 ################################################################################
 # support functions
@@ -246,7 +246,7 @@ def run_hyperopt_task_remote(script,
     if dry_run: return
 
     # get task initiator instance
-    task_queue = TaskInitiator()
+    task_queue = TaskSubmitter()
 
     # iterate over all possible permutations
     # submit task to octopus

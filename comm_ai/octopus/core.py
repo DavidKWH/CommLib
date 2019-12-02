@@ -88,6 +88,7 @@ subprocess.Popen(["virtualenv1/bin/python", "my_script.py"])
 subprocess.Popen(["virtualenv2/bin/python", "my_other_script.py"])
 '''
 
+import os
 import sys
 import json
 import subprocess
@@ -104,16 +105,38 @@ class TaskGroup:
     Base class for Task handlers
     Include common parameters and features
     '''
-    pass
+    # look for user local data
+    dirname = os.path.join(os.environ['HOME'], '.octopus')
 
-class TaskInitiator:
+    # connection file
+    conn_name = 'redis_conn.json'
+    conn_name = os.path.join(dirname, conn_name)
+
+    def __init__(self, conn=None):
+
+        conn = {}
+        conn['host'] = 'localhost'
+        conn['port'] = 16639
+        conn['password'] = 'passwd'
+
+        self.conn = conn
+
+    def save_connection(self):
+        with open( type(self).conn_name, 'w' ) as fp:
+            json.dump(self.conn, fp)
+
+
+class TaskSubmitter(TaskGroup):
     '''
     The main user facing class
     '''
     def __init__(self):
         # setup job queue
         #queue = HotQueue("myqueue", host="localhost", port=6379, db=0)
-        self.task_queue = RedisQueue("to_runners")
+        with open( type(self).conn_name, 'r' ) as fp:
+            conn = json.load(fp)
+        self.task_queue = RedisQueue("to_runners", **conn)
+        #self.task_queue = RedisQueue("to_runners")
 
     def submit(self,
                venv = 'venv-tf2',
@@ -142,14 +165,19 @@ class TaskInitiator:
         return State(msg.task_id)
 
 
-class TaskRunner:
+class TaskRunner(TaskGroup):
     '''
     Receives tasks over message queue
     '''
     def __init__(self):
         # setup job queue
         #queue = HotQueue("myqueue", host="localhost", port=6379, db=0)
-        self.task_queue = RedisQueue("to_runners")
+
+        print( type(self).conn_name )
+        with open( type(self).conn_name, 'r' ) as fp:
+            conn = json.load(fp)
+        self.task_queue = RedisQueue("to_runners", **conn)
+        #self.task_queue = RedisQueue("to_runners")
 
     def main(self):
         # main function
