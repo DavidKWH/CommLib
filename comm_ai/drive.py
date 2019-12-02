@@ -13,6 +13,8 @@ from sys import exit
 
 from googleapiclient import errors
 from googleapiclient.discovery import build
+# retry handling
+from google.api_core.retry import Retry
 # file management
 from googleapiclient.http import MediaFileUpload
 from googleapiclient.http import MediaInMemoryUpload
@@ -102,8 +104,8 @@ def get_folder(fname, parent):
                                     spaces='drive',
                                     fields=fields).execute()
 
-    for file in response.get('files', []):
-        print (f"Found folder: {file.get('name')}, {file.get('id')}")
+    #for file in response.get('files', []):
+    #    print (f"Found folder: {file.get('name')}, {file.get('id')}")
 
     file_list = [ (file.get('name'), file. get('id'))
                     for file in response.get('files', []) ]
@@ -144,7 +146,7 @@ def create_folder(fname, parent):
                                   fields='id').execute()
 
     folder_id = file.get('id')
-    print(f"Folder ID: {folder_id}")
+    #print(f"Folder ID: {folder_id}")
 
     return folder_id
 
@@ -165,8 +167,8 @@ def get_file(fname, parent):
                                     spaces='drive',
                                     fields=fields).execute()
 
-    for file in response.get('files', []):
-        print (f"Found file: {file.get('name')}, {file.get('id')}")
+    #for file in response.get('files', []):
+    #    print (f"Found file: {file.get('name')}, {file.get('id')}")
 
     file_list = [ (file.get('name'), file. get('id'))
                     for file in response.get('files', []) ]
@@ -206,7 +208,7 @@ def create_file(filepath, parent=None, mime_type=None):
     file = service.files().create(body=metadata,
                                   media_body=media,
                                   fields='id').execute()
-    print(f'File ID: {file["id"]}')
+    #print(f'File ID: {file["id"]}')
     return file['id']
 
 def update_file(filepath, file_id, mime_type=None):
@@ -264,7 +266,7 @@ def create_bytes(buf, filepath, parent=None, text=True):
     file = service.files().create(body=metadata,
                                   media_body=media,
                                   fields='id').execute()
-    print(f'File ID: {file["id"]}')
+    #print(f'File ID: {file["id"]}')
     return file['id']
 
 def update_bytes(buf, filepath, file_id, text=True):
@@ -298,6 +300,30 @@ def update_bytes(buf, filepath, file_id, text=True):
 ################################################################################
 # user API functions
 ################################################################################
+@Retry()
+def save_to_file(dst_filepath, buf, text=True):
+    ''' save buf to a remote file directly '''
+    assert not os.path.isabs(dst_filepath), 'support relative path only'
+    dst_filepath = os.path.join(rootdir, dst_filepath)
+    print(f'saving buffer to gdrive: {dst_filepath}')
+
+    dst_basename = os.path.basename(dst_filepath)
+    dst_dirname = os.path.dirname(dst_filepath)
+    dst_dirname = os.path.normpath(dst_dirname)
+
+    dirs = split_all(dst_dirname)
+    #print(dirs)
+    folder = make_dirs(dirs)
+
+    if text: buf = buf.encode()
+
+    file_id = get_file(dst_basename, folder)
+    if file_id:
+        update_bytes(buf, dst_basename, file_id, text=text)
+    else:
+        create_bytes(buf, dst_basename, folder, text=text)
+
+@Retry()
 def save_file(src_filepath, dst_filepath=None, mime_type=None):
     ''' upload file to google drive '''
     if not dst_filepath: dst_filepath = src_filepath
@@ -312,7 +338,7 @@ def save_file(src_filepath, dst_filepath=None, mime_type=None):
     dst_dirname = os.path.normpath(dst_dirname)
 
     dirs = split_all(dst_dirname)
-    print(dirs)
+    #print(dirs)
     folder = make_dirs(dirs)
 
     file_id = get_file(dst_basename, folder)
@@ -321,28 +347,7 @@ def save_file(src_filepath, dst_filepath=None, mime_type=None):
     else:
         create_file(src_filepath, folder, mime_type)
 
-def save_to_file(dst_filepath, buf, text=True):
-    ''' save buf to a remote file directly '''
-    assert not os.path.isabs(dst_filepath), 'support relative path only'
-    dst_filepath = os.path.join(rootdir, dst_filepath)
-    print(f'saving buffer to gdrive: {dst_filepath}')
-
-    dst_basename = os.path.basename(dst_filepath)
-    dst_dirname = os.path.dirname(dst_filepath)
-    dst_dirname = os.path.normpath(dst_dirname)
-
-    dirs = split_all(dst_dirname)
-    print(dirs)
-    folder = make_dirs(dirs)
-
-    if text: buf = buf.encode()
-
-    file_id = get_file(dst_basename, folder)
-    if file_id:
-        update_bytes(buf, dst_basename, file_id, text=text)
-    else:
-        create_bytes(buf, dst_basename, folder, text=text)
-
+@Retry()
 def save_folder(src_filepath, dst_filepath=None, recursive=True):
     ''' recursively save of the contents in filepath '''
     if not dst_filepath: dst_filepath = src_filepath
@@ -364,5 +369,4 @@ def save_folder(src_filepath, dst_filepath=None, recursive=True):
             save_file(src_path, dst_path)
         else:
             raise RuntimeError(f'cannot handle special files: {src_path}')
-
 
