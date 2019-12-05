@@ -5,6 +5,7 @@ Design:
     per user authentication setup
     look inside $HOME for application data
 '''
+import io
 import os
 import glob
 import mimetypes
@@ -297,6 +298,31 @@ def update_bytes(buf, filepath, file_id, text=True):
 
     return file_id
 
+def download_bytes(filepath, file_id, text=True):
+    '''
+    download content into local filepath [not verified]
+    '''
+
+    request = service.files().get_media(fileId=file_id)
+
+    #fh = io.FileIO(filepath, mode='w')
+    fh = io.StringIO()
+    #downloader = MediaIoBaseDownload(fh, request, chunksize=1024*1024)
+    downloader = MediaIoBaseDownload(fh, request)
+
+    done = False
+    while done is False:
+        status, done = downloader.next_chunk()
+        if status:
+            print("Download {}%".format( int(status.progress()*100) ) )
+    print("Download Complete!")
+
+    # return string buffer
+    fh.seek(0) # reset file handle
+    buf = fp.read()
+
+    return buf
+
 ################################################################################
 # user API functions
 ################################################################################
@@ -322,6 +348,29 @@ def save_to_file(dst_filepath, buf, text=True):
         update_bytes(buf, dst_basename, file_id, text=text)
     else:
         create_bytes(buf, dst_basename, folder, text=text)
+
+@Retry()
+def load_from_file(dst_filepath, text=True):
+    ''' return content of remote file [not verified]'''
+
+    src_filepath = os.path.relpath(dst_filepath, rootdir)
+    print(f'loading from file: {dst_filepath}')
+
+    dst_basename = os.path.basename(dst_filepath)
+    dst_dirname = os.path.dirname(dst_filepath)
+    dst_dirname = os.path.normpath(dst_dirname)
+
+    dirs = split_all(dst_dirname)
+    #print(dirs)
+    folder = make_dirs(dirs)
+
+    file_id = get_file(dst_basename, folder)
+    if file_id:
+        buf = download_bytes(dst_basename, file_id, text=text)
+    else:
+        raise RuntimeError('file does not exist')
+
+    return buf
 
 @Retry()
 def save_file(src_filepath, dst_filepath=None, mime_type=None):
