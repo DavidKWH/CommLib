@@ -91,6 +91,7 @@ subprocess.Popen(["virtualenv2/bin/python", "my_other_script.py"])
 import os
 import sys
 import json
+import jsonpickle
 import subprocess
 from hotqueue import HotQueue as RedisQueue
 from comm_ai.drive import save_to_file
@@ -162,7 +163,31 @@ class TaskSubmitter(TaskGroup):
         save_to_file(fname, buf, text=True)
 
         # construct task state
-        return State(msg.task_id)
+        return State(task.task_id)
+
+    def resubmit(self, task_file):
+        ''' resubmit a task from json file '''
+
+        with open(task_file, 'r') as fp:
+            data = fp.read()
+            task = jsonpickle.decode(data)
+
+        msg = RunTaskMessage.from_task(task)
+
+        # submit to queue
+        self.task_queue.put(msg)
+
+        # save to remote
+        task = msg.get_task()
+        task.status = 'resubmitted'
+        tname = '.'.join((task.task_id, task.status))
+        fname = '/'.join(('tasks', tname))
+        print('saving task to:', fname)
+        buf = task.serialize()
+        save_to_file(fname, buf, text=True)
+
+        # construct task state
+        return State(task.task_id)
 
 
 class TaskRunner(TaskGroup):
@@ -172,8 +197,6 @@ class TaskRunner(TaskGroup):
     def __init__(self):
         # setup job queue
         #queue = HotQueue("myqueue", host="localhost", port=6379, db=0)
-
-        print( type(self).conn_name )
         with open( type(self).conn_name, 'r' ) as fp:
             conn = json.load(fp)
         self.task_queue = RedisQueue("to_runners", **conn)
@@ -224,9 +247,12 @@ class TaskRunner(TaskGroup):
             print('waiting for msg...')
             msg = self.task_queue.get(block=True)
             print('got msg:')
+            print('msg.type', msg.type)
+            print('msg.script', msg.task.script)
+            print('msg.input', msg.task.input)
             #print(msg)
-            print(msg.input)
-            print(msg.script.name)
+            #print(msg.input)
+            #print(msg.script.name)
 
             # save to remote
             task = msg.get_task()
@@ -248,7 +274,7 @@ class TaskRunner(TaskGroup):
             else:
                 task.status = 'done'
             # save stdout
-            task.stdout = state.stdout
+            task.output = state.stdout
             tname = '.'.join((task.task_id, task.status))
             fname = '/'.join(('tasks', tname))
             print('saving task to:', fname)
