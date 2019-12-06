@@ -4,6 +4,7 @@ helper functions
 import os
 import uuid
 import socket
+import functools
 from datetime import datetime
 from hashlib import blake2b
 
@@ -44,3 +45,32 @@ def hash_fn(buf):
     h = blake2b(digest_size=DIGEST_SIZE)
     h.update(buf)
     return h.hexdigest()
+
+################################################################################
+# custom retry decorator
+################################################################################
+def conn_retry(func):
+    ''' custom retry decorator '''
+    MAX_RETRIES = 3
+    EXCEPTION = BrokenPipeError
+
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        for i in range(MAX_RETRIES):
+            #print('attempt', i)
+            failed = False
+            try:
+                value = func(*args, **kwargs)
+            except EXCEPTION as e:
+                #print('caught exception', type(e))
+                failed = True
+                if i+1 == MAX_RETRIES:
+                    raise RuntimeError('Maximum retries reached') from e
+            if not failed:
+                #print('all good')
+                break
+        # return function value
+        return value
+
+    return wrapper
+

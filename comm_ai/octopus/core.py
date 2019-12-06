@@ -96,7 +96,14 @@ import subprocess
 from hotqueue import HotQueue as RedisQueue
 from comm_ai.drive import save_to_file
 from .messages import RunTaskMessage
+from .util import conn_retry
 
+# decorate function to catch exceptions
+save_to_file = conn_retry(save_to_file)
+
+################################################################################
+# Main classes
+################################################################################
 class State:
     def __init__(self, task_id):
         self.task_id = task_id
@@ -273,11 +280,15 @@ class TaskRunner(TaskGroup):
                 task.status = 'error'
             else:
                 task.status = 'done'
-            # save stdout
+            # add stdout to task
             task.output = state.stdout
             tname = '.'.join((task.task_id, task.status))
             fname = '/'.join(('tasks', tname))
             print('saving task to:', fname)
             buf = task.serialize()
             save_to_file(fname, buf, text=True)
-
+            # save stdout to file
+            tname = '.'.join((task.task_id, 'output'))
+            fname = '/'.join(('tasks', tname))
+            print('saving output to:', fname)
+            save_to_file(fname, state.stdout, text=True)
