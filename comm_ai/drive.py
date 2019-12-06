@@ -34,7 +34,8 @@ def get_authenticated(SCOPES, credential_file='credentials.json',
     if not creds or creds.invalid:
         flow = client.flow_from_clientsecrets(credential_file, SCOPES)
         creds = tools.run_flow(flow, store)
-    service = build(service_name, api_version, http=creds.authorize(Http()))
+    service = build(service_name, api_version, http=creds.authorize(Http()),
+                    cache_discovery=False)
     return service
 
 ################################################################################
