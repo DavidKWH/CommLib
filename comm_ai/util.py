@@ -67,35 +67,34 @@ class PrecisionTimer(object):
                 elapsed *= 1000
 
 ################################################################################
-# old stuff
+# (Old) used in sweep_coded_ber_perf.py
 ################################################################################
+class BitErrorRate:
+    '''
+    Implement the BER metric
+    '''
+    def __init__(self,K):
+        self.errs = 0
+        self.cnt = 0
+        self.K = K
 
-#class BitErrorRate:
-#    '''
-#    Implement the BER metric
-#    '''
-#    def __init__(self,K):
-#        self.errs = 0
-#        self.cnt = 0
-#        self.K = K
-#
-#    def __call__(self, *args, **kwargs):
-#        self.update_state(*args, **kwargs)
-#
-#    def update_state(self, true, pred):
-#        K = self.K
-#        errs = sum(true[:K] != pred[:K])
-#        self.cnt += 1
-#        self.errs += errs
-#
-#    def reset_states(self):
-#        self.errs = 0
-#        self.cnt = 0
-#
-#    def result(self):
-#        cnt = self.cnt
-#        errs = self.errs
-#        K = self.K
-#
-#        total = cnt * K
-#        return errs / total
+    def __call__(self, *args, **kwargs):
+        self.update_state(*args, **kwargs)
+
+    def update_state(self, true, pred):
+        K = self.K
+        errs = sum(true[:K] != pred[:K])
+        self.cnt += 1
+        self.errs += errs
+
+    def reset_states(self):
+        self.errs = 0
+        self.cnt = 0
+
+    def result(self):
+        cnt = self.cnt
+        errs = self.errs
+        K = self.K
+
+        total = cnt * K
+        return errs / total

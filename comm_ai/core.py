@@ -5,6 +5,7 @@
 
 # general dependencies
 import numpy as np
+import numpy.linalg as la
 import numpy.random as rnd
 # for crandn
 from numpy.random import randn
@@ -81,8 +82,12 @@ def bv2dec(bit_mat):
 
 ################################################################################
 # comm. classes
+# FIXME: split into separate files
 ################################################################################
 
+################################################################################
+# high level receiver class
+################################################################################
 class Receiver:
     '''
     Encapsulate demod and decoding
@@ -90,11 +95,24 @@ class Receiver:
 
     def __init__(self,p,
                  demodulator = None,
+                 estimator = None,
+                 demapper = None,
                  decoder = None,
                  ):
-        assert(demodulator)
+        '''
+        Assumptions:
+            Either accept a demodulator that maps (y,H) directly to LLRs or
+            a (estimator, demapper) pair that perform a two stage process
+        '''
+
+        assert (demodulator or
+                not demodulator and (estimator and demapper)
+                )
+
         self.p = p
         self.demod = demodulator
+        self.est = estimator
+        self.demap = demapper
         self.dec = decoder
 
     def __call__(self, *args, **kwargs):
@@ -102,22 +120,31 @@ class Receiver:
 
     def detect(self, y_tsr, h_tsr, n_var_tsr):
         '''
-        when decoder is provided, returns hard decisions and llrs
-        when decoder is absent, returns decoded bits and iterations
+        when decoder is None, returns hard decisions and llrs
+        when decoder is present, returns decoded bits and iterations
         NOTE: return bit vectors as list easier to handle
         '''
         p = self.p
         demod = self.demod
         dec = self.dec
+        est = self.est
+        demap = self.demap
 
-        llr_mat = demod.compute_llrs(y_tsr, h_tsr, n_var_tsr)
+        if demod:
+            llr_mat = demod.compute_llrs(y_tsr, h_tsr, n_var_tsr)
+        else:
+            x_hat_tsr = est.estimate(y_tsr, h_tsr, n_var_tsr)
+            llr_mat = demap.compute_llrs(x_hat_tsr, h_tsr, n_var_tsr)
+
+        # reshape
         llr_tsr = llr_mat.reshape(p.N_syms, p.N_sts, p.nbps)
+
         # reshuffle llrs matrix
         # llrs_list contains N_sts llr vectors
         llrs_list = np.split(llr_tsr, p.N_sts, axis=1)
         llrs_list = [ llrs.reshape(-1) for llrs in llrs_list ]
 
-        if demod == None:
+        if dec == None:
             # generate hard decisions
             dec_bits_list = [ llrs < 0  for llrs in llrs_list ]
             return dec_bits_list, llrs_list
@@ -129,10 +156,13 @@ class Receiver:
             dec_bits_list = columns[0]
             iter_list = columns[1]
             # remove parity bits
-            dec_bits_list = [ llrs[:p.K] for llrs in dec_bits_list ]
+            dec_bits_list = [ llrs[:p.dec.K] for llrs in dec_bits_list ]
             return dec_bits_list, iter_list
 
 
+################################################################################
+# high level transmitter class
+################################################################################
 class Transmitter:
     '''
     Encapsulate all TX functions
@@ -220,6 +250,9 @@ class Transmitter:
         return sym_tsr, bits_output
 
 
+################################################################################
+# channel class
+################################################################################
 class Channel:
     '''
     Encapsulate channel and noise generation, application
@@ -355,6 +388,9 @@ class Channel:
 
         return y_tsr, n_var_tsr
 
+################################################################################
+# demodulator classes
+################################################################################
 class Demodulator:
     '''
     Computes exact LLRs given transmit alphabets,
@@ -494,7 +530,223 @@ class Demodulator:
 
         return lambda_mat
 
+class OneBitMLDemod(Demodulator):
+    '''
+    Compute the LLRs for ML 1-bit receiver
+    '''
 
+    def __init__(self, p,
+                 modulator = None,
+                 maxlog_approx = False
+                 ):
+        super().__init__(p, modulator, maxlog_approx)
+
+    def compute_llrs(self, y_tsr, h_tsr, n_var_tsr, scaling=True):
+        '''
+        compute exact LLR for 1-bit receiver
+        '''
+        pass
+
+################################################################################
+# symbol detector classes
+################################################################################
+class SymbolEstimator:
+    '''
+    Symbol estimation (perform recovery of x_hat)
+    Assume Linear Gaussian Channel
+    '''
+    def __init__(self, p, mode='mmse'):
+        self.p = p
+        self.mode = mode
+        self.est = partial(self.estimators[mode], self)
+        print(f'Symbol Estimator mode = {mode}')
+
+    def zf_est(self, y_tsr, h_tsr, n_var_tsr):
+        h_inv_tsr = la.pinv(h_tsr)
+        w = h_inv_tsr
+        return w @ y_tsr
+
+    def mmse_est(self, y_tsr, h_tsr, n_var_tsr):
+
+        def mmse_weight(h_mat, n_var):
+            ''' matrix.H is a property function '''
+            A = np.matrix(h_mat)
+            N_tx = h_mat.shape[1]
+            I = n_var * np.identity(N_tx)
+            return la.inv(A.H @ A + I) * A.H
+
+        w = [ mmse_weight(h_mat, n_var) for (h_mat, n_var) in zip(h_tsr, n_var_tsr) ]
+        return w @ y_tsr
+
+    # estimators
+    estimators = {
+        'mmse' : mmse_est,
+        'zf'   : zf_est,
+    }
+
+    def estimate(self, y_tsr, h_tsr, n_var_tsr):
+        '''
+        call estimator function
+        '''
+        return self.est(y_tsr, h_tsr, n_var_tsr)
+
+################################################################################
+# demapper classes
+################################################################################
+class GaussianDemapper:
+    '''
+    Implements demapping in the symbol space for
+    symbol detector evalution.
+    Based on the Demodulator class.
+
+    NOTE: demaps one stream at a time
+    '''
+    def __init__(self, p,
+                 modulator = None,
+                 maxlog_approx = False
+                 ):
+        self.p = p
+        self.maxlog_approx = maxlog_approx
+        if modulator:
+            self.mod = modulator
+        else:
+            # assume QAM used
+            self.mod = QAMModulator(p.M)
+
+        ################################
+        # precompute symbol tables
+        ################################
+        # generate bv/symbol tables
+        sym_mat, bit_mat = self.build_source_tables()
+        # construct symbol subsets
+        n_bits = p.nbps * p.N_sts
+        sym_sets_1 = []
+        sym_sets_0 = []
+        for i in range(n_bits):
+            idx_1 = (bit_mat[:,i] == 1)
+            idx_0 = (bit_mat[:,i] == 0)
+            sym_sets_1.append( sym_mat[idx_1,:] )
+            sym_sets_0.append( sym_mat[idx_0,:] )
+        # save them up
+        self.sym_sets_1 = sym_sets_1
+        self.sym_sets_0 = sym_sets_0
+
+    # multi-stream bv/symbol tables
+    #################################
+    def vpermute(self, a,b):
+        '''
+        permute matrices a,b
+        assume a,b with same dtype
+        '''
+        assert(a.dtype == b.dtype)
+        p = self.p
+        Na = a.shape[0]
+        Nb = b.shape[0]
+        ones_a = np.ones((Na,1))
+        ones_b = np.ones((Nb,1))
+        mat_1 = np.kron(a, ones_b).astype(a.dtype)
+        mat_2 = np.kron(ones_a, b).astype(a.dtype)
+        # merge column wise (axis=1)
+        mat_all = np.c_[mat_1, mat_2]
+        return mat_all
+
+    def build_source_tables(self):
+        '''
+        construct multi-stream tables recursively
+        '''
+        p = self.p
+        mod = self.mod
+        sym_vec, bit_mat = mod.get_const()
+        if p.N_sts == 1:
+            return sym_vec, bit_mat
+        else: # N_sts > 1
+            sym_a, sym_b = sym_vec, sym_vec
+            bit_a, bit_b = bit_mat, bit_mat
+            for i in range(p.N_sts - 1):
+                sym_a = self.vpermute(sym_a, sym_b)
+                bit_a = self.vpermute(bit_a, bit_b)
+            return sym_a, bit_a
+
+
+    def l2_norm_llrs(self, x_hat_tsr, n_var_tsr):
+        '''
+        compute single stream LLRs based on l2-norm
+
+        Gaussian noise assumption:
+            Thus we compute the matrix |x_hat - x|^2 where
+        '''
+        p = self.p
+        exact_llr = not self.maxlog_approx
+        sym_sets_1 = self.sym_sets_1
+        sym_sets_0 = self.sym_sets_0
+        N = x_hat_tsr.shape[0]
+
+        # TODO: assert y_tsr and syms have the same dimensions
+        import pdb; pdb.set_trace()
+
+        # exact llr computation
+        ########################
+        #n_bits = p.nbps * p.N_sts
+        n_bits = p.nbps * p.N_sts
+        lambda_mat = np.zeros((N, n_bits))
+        for ni in range(n_bits):
+
+            # define l2_norm()
+            l2_norm = partial(np.linalg.norm, ord=2, axis=2)
+
+            # implement quad_mat_x using tensor broadcasting
+            #h_tsr_ex  = h_tsr[:,np.newaxis,:,:]
+            syms_1 = sym_sets_1[ni]
+            syms_1_ex = syms_1[np.newaxis,:,:,np.newaxis]
+            syms_0 = sym_sets_0[ni]
+            syms_0_ex = syms_0[np.newaxis,:,:,np.newaxis]
+            #y  = y_tsr[:,np.newaxis,:,:]
+            x_hat  = x_hat_tsr[:,np.newaxis,:,:]
+
+            # limited precision formulation for log_sum_exp
+            scale = 1/(2*p.n_var)
+            #hs_1 = h_tsr_ex @ syms_1_ex
+            x_1 = syms_1_ex
+            quad_mat_1 = - l2_norm(x_hat - x_1)**2
+            quad_mat_1 = np.squeeze(quad_mat_1, axis=2)
+            qt_max_1 = np.amax(quad_mat_1, axis=1)
+            if exact_llr:
+                quad_mat_adj_1 = quad_mat_1 - qt_max_1[:,np.newaxis]
+                exp_mat_adj_1 = np.exp( scale * quad_mat_adj_1 )
+                sum_exp_adj_1 = np.sum(exp_mat_adj_1, axis=1)
+                log_sum_exp_1 = scale * qt_max_1 + np.log(sum_exp_adj_1)
+            else:
+                log_sum_exp_1 = scale * qt_max_1
+
+            #hs_0 = h_tsr_ex @ syms_0_ex
+            x_0 = syms_0_ex
+            quad_mat_0 = - l2_norm(x_hat - x_0)**2
+            quad_mat_0 = np.squeeze(quad_mat_0, axis=2)
+            qt_max_0 = np.amax(quad_mat_0, axis=1)
+            if exact_llr:
+                quad_mat_adj_0 = quad_mat_0 - qt_max_0[:,np.newaxis]
+                exp_mat_adj_0 = np.exp( scale * quad_mat_adj_0 )
+                sum_exp_adj_0 = np.sum(exp_mat_adj_0, axis=1)
+                log_sum_exp_0 = scale * qt_max_0 + np.log(sum_exp_adj_0)
+            else:
+                log_sum_exp_0 = scale * qt_max_0
+
+            lambda_vec = log_sum_exp_0 - log_sum_exp_1;
+
+            lambda_mat[:,ni] = lambda_vec
+
+        return lambda_mat
+
+    def compute_llrs(self, x_hat_tsr, h_tsr, n_var_tsr):
+        '''
+        use l2-norm based method only
+        '''
+        return self.l2_norm_llrs(x_hat_tsr, n_var_tsr)
+
+
+################################################################################
+# modulator classes
+################################################################################
 class QAMModulator:
     '''
     Implements (square) QAM modulation with gray-coding
