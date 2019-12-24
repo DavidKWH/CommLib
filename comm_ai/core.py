@@ -619,7 +619,8 @@ class GaussianDemapper:
         # generate bv/symbol tables
         sym_mat, bit_mat = self.build_source_tables()
         # construct symbol subsets
-        n_bits = p.nbps * p.N_sts
+        #n_bits = p.nbps * p.N_sts
+        n_bits = p.nbps
         sym_sets_1 = []
         sym_sets_0 = []
         for i in range(n_bits):
@@ -633,22 +634,22 @@ class GaussianDemapper:
 
     # multi-stream bv/symbol tables
     #################################
-    def vpermute(self, a,b):
-        '''
-        permute matrices a,b
-        assume a,b with same dtype
-        '''
-        assert(a.dtype == b.dtype)
-        p = self.p
-        Na = a.shape[0]
-        Nb = b.shape[0]
-        ones_a = np.ones((Na,1))
-        ones_b = np.ones((Nb,1))
-        mat_1 = np.kron(a, ones_b).astype(a.dtype)
-        mat_2 = np.kron(ones_a, b).astype(a.dtype)
-        # merge column wise (axis=1)
-        mat_all = np.c_[mat_1, mat_2]
-        return mat_all
+#    def vpermute(self, a,b):
+#        '''
+#        permute matrices a,b
+#        assume a,b with same dtype
+#        '''
+#        assert(a.dtype == b.dtype)
+#        p = self.p
+#        Na = a.shape[0]
+#        Nb = b.shape[0]
+#        ones_a = np.ones((Na,1))
+#        ones_b = np.ones((Nb,1))
+#        mat_1 = np.kron(a, ones_b).astype(a.dtype)
+#        mat_2 = np.kron(ones_a, b).astype(a.dtype)
+#        # merge column wise (axis=1)
+#        mat_all = np.c_[mat_1, mat_2]
+#        return mat_all
 
     def build_source_tables(self):
         '''
@@ -657,16 +658,16 @@ class GaussianDemapper:
         p = self.p
         mod = self.mod
         sym_vec, bit_mat = mod.get_const()
-        if p.N_sts == 1:
-            return sym_vec, bit_mat
-        else: # N_sts > 1
-            sym_a, sym_b = sym_vec, sym_vec
-            bit_a, bit_b = bit_mat, bit_mat
-            for i in range(p.N_sts - 1):
-                sym_a = self.vpermute(sym_a, sym_b)
-                bit_a = self.vpermute(bit_a, bit_b)
-            return sym_a, bit_a
-
+        return sym_vec, bit_mat
+        #if p.N_sts == 1:
+        #    return sym_vec, bit_mat
+        #else: # N_sts > 1
+        #    sym_a, sym_b = sym_vec, sym_vec
+        #    bit_a, bit_b = bit_mat, bit_mat
+        #    for i in range(p.N_sts - 1):
+        #        sym_a = self.vpermute(sym_a, sym_b)
+        #        bit_a = self.vpermute(bit_a, bit_b)
+        #    return sym_a, bit_a
 
     def l2_norm_llrs(self, x_hat_tsr, n_var_tsr):
         '''
@@ -681,13 +682,10 @@ class GaussianDemapper:
         sym_sets_0 = self.sym_sets_0
         N = x_hat_tsr.shape[0]
 
-        # TODO: assert y_tsr and syms have the same dimensions
-        import pdb; pdb.set_trace()
-
         # exact llr computation
         ########################
         #n_bits = p.nbps * p.N_sts
-        n_bits = p.nbps * p.N_sts
+        n_bits = p.nbps
         lambda_mat = np.zeros((N, n_bits))
         for ni in range(n_bits):
 
@@ -739,9 +737,20 @@ class GaussianDemapper:
 
     def compute_llrs(self, x_hat_tsr, h_tsr, n_var_tsr):
         '''
-        use l2-norm based method only
+        compute LLRs per stream (ignore cross correlation)
+
+        Dimensions:
+            x_hat_tsr.shape = (N, N_tx, 1)
+            n_var_tsr.shape = (N, 1, 1)
+
         '''
-        return self.l2_norm_llrs(x_hat_tsr, n_var_tsr)
+        axis = 1
+        N_sections = x_hat_tsr.shape[axis]
+        x_hats_list = np.split(x_hat_tsr, N_sections, axis=axis)
+        # list of arrays with shape (N, N_bits)
+        llrs_list = [ self.l2_norm_llrs(x_hats, n_var_tsr) for x_hats in x_hats_list ]
+        llrs_concat = np.concatenate(llrs_list, axis=1)
+        return llrs_concat
 
 
 ################################################################################
