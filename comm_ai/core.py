@@ -121,7 +121,7 @@ class Receiver:
     def detect(self, y_tsr, h_tsr, n_var_tsr):
         '''
         when decoder is None, returns hard decisions and llrs
-        when decoder is present, returns decoded bits and iterations
+        when decoder is present, returns decoded bits, llrs and num iterations
         NOTE: return bit vectors as list easier to handle
         '''
         p = self.p
@@ -133,8 +133,8 @@ class Receiver:
         if demod:
             llr_mat = demod.compute_llrs(y_tsr, h_tsr, n_var_tsr)
         else:
-            x_hat_tsr = est.estimate(y_tsr, h_tsr, n_var_tsr)
-            llr_mat = demap.compute_llrs(x_hat_tsr, h_tsr, n_var_tsr)
+            x_hat_tsr, covar_tsr = est.estimate(y_tsr, h_tsr, n_var_tsr)
+            llr_mat = demap.compute_llrs(x_hat_tsr, h_tsr, covar_tsr)
 
         # reshape
         llr_tsr = llr_mat.reshape(p.N_syms, p.N_sts, p.nbps)
@@ -157,7 +157,7 @@ class Receiver:
             iter_list = columns[1]
             # remove parity bits
             dec_bits_list = [ llrs[:p.dec.K] for llrs in dec_bits_list ]
-            return dec_bits_list, iter_list
+            return dec_bits_list, llrs_list, iter_list
 
 
 ################################################################################
@@ -275,6 +275,16 @@ class Channel:
     '''
     channel generation functions
     '''
+    def gen_diagonal_ch(self, N, N_tx, N_rx):
+        assert(N_tx == N_rx)
+        p = self.p
+        # generate random sv's
+        sv_mat = rnd.uniform(low=p.u_a, high=p.u_b, size=(N,N_tx))
+        S_list = [np.diag(sv) for sv in sv_mat]
+        S_tsr = np.array(S_list)
+
+        return S_tsr
+
     def gen_ch_from_sv_dist(self, N, N_tx, N_rx):
         # generate matrices with specific sv distribution for DNN training
         assert(N_tx == N_rx)
@@ -312,8 +322,10 @@ class Channel:
         H = np.identity(N_tx).astype(complex)
         return np.tile(H,(N,1)).reshape(N, N_tx, N_rx)
 
+
     # channel selection
     channels = {
+        'diagonal' : gen_diagonal_ch,
         'sv_dist'  : gen_ch_from_sv_dist,
         'identity' : gen_identity_ch,
         'rayleigh' : gen_rayleigh_ch,
@@ -499,7 +511,7 @@ class Demodulator:
             y  = y_tsr[:,np.newaxis,:,:]
 
             # limited precision formulation for log_sum_exp
-            scale = 1/(2*p.n_var)
+            scale = 1/p.n_var
             hs_1 = h_tsr_ex @ syms_1_ex
             quad_mat_1 = - l2_norm(y - hs_1)**2
             quad_mat_1 = np.squeeze(quad_mat_1, axis=2)
@@ -553,7 +565,12 @@ class OneBitMLDemod(Demodulator):
 class SymbolEstimator:
     '''
     Symbol estimation (perform recovery of x_hat)
-    Assume Linear Gaussian Channel
+    Assume Linear Gaussian Channel, i.e.
+        y = Ax + n
+
+    Inputs:
+        h_tsr:     channel realizations
+        n_var_tsr: noise variance of n
     '''
     def __init__(self, p, mode='mmse'):
         self.p = p
@@ -561,10 +578,20 @@ class SymbolEstimator:
         self.est = partial(self.estimators[mode], self)
         print(f'Symbol Estimator mode = {mode}')
 
+    def covar(self, w_mat, n_var):
+        ''' assume noise variance is n_var * I '''
+        n_var = n_var.item() # one item in array
+        A = np.matrix(w_mat)
+        Sigma = n_var * A * A.H
+        return Sigma
+
     def zf_est(self, y_tsr, h_tsr, n_var_tsr):
+
         h_inv_tsr = la.pinv(h_tsr)
-        w = h_inv_tsr
-        return w @ y_tsr
+        w_tsr = h_inv_tsr
+        x_hat_tsr = w_tsr @ y_tsr
+
+        return x_hat_tsr, w_tsr
 
     def mmse_est(self, y_tsr, h_tsr, n_var_tsr):
 
@@ -575,8 +602,10 @@ class SymbolEstimator:
             I = n_var * np.identity(N_tx)
             return la.inv(A.H @ A + I) * A.H
 
-        w = [ mmse_weight(h_mat, n_var) for (h_mat, n_var) in zip(h_tsr, n_var_tsr) ]
-        return w @ y_tsr
+        w_tsr = [ mmse_weight(h_mat, n_var) for (h_mat, n_var) in zip(h_tsr, n_var_tsr) ]
+        x_hat_tsr = w_tsr @ y_tsr
+
+        return x_hat_tsr, w_tsr
 
     # estimators
     estimators = {
@@ -585,10 +614,10 @@ class SymbolEstimator:
     }
 
     def estimate(self, y_tsr, h_tsr, n_var_tsr):
-        '''
-        call estimator function
-        '''
-        return self.est(y_tsr, h_tsr, n_var_tsr)
+        ''' calls estimator function '''
+        x_hat_tsr, w_tsr = self.est(y_tsr, h_tsr, n_var_tsr)
+        covar_tsr = [ self.covar(w_mat, n_var) for (w_mat, n_var) in zip(w_tsr, n_var_tsr) ]
+        return x_hat_tsr, covar_tsr
 
 ################################################################################
 # demapper classes
@@ -597,9 +626,11 @@ class GaussianDemapper:
     '''
     Implements demapping in the symbol space for
     symbol detector evalution.
-    Based on the Demodulator class.
-
     NOTE: demaps one stream at a time
+
+    Ignores cross correlation between symbol estimates.
+
+    Based on Demodulator class.
     '''
     def __init__(self, p,
                  modulator = None,
@@ -619,7 +650,6 @@ class GaussianDemapper:
         # generate bv/symbol tables
         sym_mat, bit_mat = self.build_source_tables()
         # construct symbol subsets
-        #n_bits = p.nbps * p.N_sts
         n_bits = p.nbps
         sym_sets_1 = []
         sym_sets_0 = []
@@ -671,10 +701,14 @@ class GaussianDemapper:
 
     def l2_norm_llrs(self, x_hat_tsr, n_var_tsr):
         '''
-        compute single stream LLRs based on l2-norm
+        compute single stream LLRs for an array of observed with
+        associated noise variances.
+
+        NOTE: unlike the receive side demod, n_var may vary with x_hat
 
         Gaussian noise assumption:
-            Thus we compute the matrix |x_hat - x|^2 where
+            Thus we compute the distance 1/n_var * |x_hat - x|^2
+            for each candidate x
         '''
         p = self.p
         exact_llr = not self.maxlog_approx
@@ -682,9 +716,12 @@ class GaussianDemapper:
         sym_sets_0 = self.sym_sets_0
         N = x_hat_tsr.shape[0]
 
+        # n_var_tsr is the diagonal elements of
+        # covariance matrices, should not be complex
+        n_var_tsr = n_var_tsr.real
+
         # exact llr computation
         ########################
-        #n_bits = p.nbps * p.N_sts
         n_bits = p.nbps
         lambda_mat = np.zeros((N, n_bits))
         for ni in range(n_bits):
@@ -693,62 +730,62 @@ class GaussianDemapper:
             l2_norm = partial(np.linalg.norm, ord=2, axis=2)
 
             # implement quad_mat_x using tensor broadcasting
-            #h_tsr_ex  = h_tsr[:,np.newaxis,:,:]
             syms_1 = sym_sets_1[ni]
             syms_1_ex = syms_1[np.newaxis,:,:,np.newaxis]
             syms_0 = sym_sets_0[ni]
             syms_0_ex = syms_0[np.newaxis,:,:,np.newaxis]
-            #y  = y_tsr[:,np.newaxis,:,:]
             x_hat  = x_hat_tsr[:,np.newaxis,:,:]
 
             # limited precision formulation for log_sum_exp
-            scale = 1/(2*p.n_var)
-            #hs_1 = h_tsr_ex @ syms_1_ex
+            scales = 1/n_var_tsr
             x_1 = syms_1_ex
             quad_mat_1 = - l2_norm(x_hat - x_1)**2
             quad_mat_1 = np.squeeze(quad_mat_1, axis=2)
-            qt_max_1 = np.amax(quad_mat_1, axis=1)
+            qt_max_1 = np.amax(quad_mat_1, axis=1, keepdims=True)
             if exact_llr:
-                quad_mat_adj_1 = quad_mat_1 - qt_max_1[:,np.newaxis]
-                exp_mat_adj_1 = np.exp( scale * quad_mat_adj_1 )
-                sum_exp_adj_1 = np.sum(exp_mat_adj_1, axis=1)
-                log_sum_exp_1 = scale * qt_max_1 + np.log(sum_exp_adj_1)
+                quad_mat_adj_1 = quad_mat_1 - qt_max_1
+                exp_mat_adj_1 = np.exp( scales * quad_mat_adj_1 )
+                sum_exp_adj_1 = np.sum(exp_mat_adj_1, axis=1, keepdims=True)
+                log_sum_exp_1 = scales * qt_max_1 + np.log(sum_exp_adj_1)
             else:
-                log_sum_exp_1 = scale * qt_max_1
+                log_sum_exp_1 = scales * qt_max_1
 
-            #hs_0 = h_tsr_ex @ syms_0_ex
             x_0 = syms_0_ex
             quad_mat_0 = - l2_norm(x_hat - x_0)**2
             quad_mat_0 = np.squeeze(quad_mat_0, axis=2)
-            qt_max_0 = np.amax(quad_mat_0, axis=1)
+            qt_max_0 = np.amax(quad_mat_0, axis=1, keepdims=True)
             if exact_llr:
-                quad_mat_adj_0 = quad_mat_0 - qt_max_0[:,np.newaxis]
-                exp_mat_adj_0 = np.exp( scale * quad_mat_adj_0 )
-                sum_exp_adj_0 = np.sum(exp_mat_adj_0, axis=1)
-                log_sum_exp_0 = scale * qt_max_0 + np.log(sum_exp_adj_0)
+                quad_mat_adj_0 = quad_mat_0 - qt_max_0
+                exp_mat_adj_0 = np.exp( scales * quad_mat_adj_0 )
+                sum_exp_adj_0 = np.sum(exp_mat_adj_0, axis=1, keepdims=True)
+                log_sum_exp_0 = scales * qt_max_0 + np.log(sum_exp_adj_0)
             else:
-                log_sum_exp_0 = scale * qt_max_0
+                log_sum_exp_0 = scales * qt_max_0
 
             lambda_vec = log_sum_exp_0 - log_sum_exp_1;
 
-            lambda_mat[:,ni] = lambda_vec
+            lambda_mat[:,ni] = np.squeeze(lambda_vec)
 
         return lambda_mat
 
-    def compute_llrs(self, x_hat_tsr, h_tsr, n_var_tsr):
+    def compute_llrs(self, x_hat_tsr, h_tsr, covar_tsr):
         '''
         compute LLRs per stream (ignore cross correlation)
 
         Dimensions:
             x_hat_tsr.shape = (N, N_tx, 1)
-            n_var_tsr.shape = (N, 1, 1)
+            covar_tsr.shape = (N, N_tx, N_tx)
 
         '''
         axis = 1
         N_sections = x_hat_tsr.shape[axis]
         x_hats_list = np.split(x_hat_tsr, N_sections, axis=axis)
+        n_var_list = [ np.diag(covar_mat) for covar_mat in covar_tsr ]
+        n_var_tsr = np.array(n_var_list)
+        n_vars_list = np.split(n_var_tsr, N_sections, axis=axis)
         # list of arrays with shape (N, N_bits)
-        llrs_list = [ self.l2_norm_llrs(x_hats, n_var_tsr) for x_hats in x_hats_list ]
+        llrs_list = [ self.l2_norm_llrs(x_hats, n_vars) for (x_hats, n_vars) in
+                            zip(x_hats_list, n_vars_list) ]
         llrs_concat = np.concatenate(llrs_list, axis=1)
         return llrs_concat
 
