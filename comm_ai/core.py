@@ -797,6 +797,8 @@ class QAMModulator:
     '''
     Implements (square) QAM modulation with gray-coding
     This matches the WIFI/LTE standard
+
+    Added 8PSK from 3GPP TS 45.004 version 9.0.0 Release 9
     '''
 
     # define mapper functions
@@ -813,6 +815,14 @@ class QAMModulator:
         bv_q = bv[:,1]
         syms = (2*bv_i - 1) + 1j*(2*bv_q - 1)
         syms = syms.reshape(-1)
+        return syms
+
+    def map_8psk(self, bit_vec):
+        M = self.M
+        lut = type(self).sym_luts[M]
+        bv = np.reshape(bit_vec, (-1,3))
+        dv = bv2dec(bv)
+        syms = np.exp(1j*2.*np.pi*lut[dv]/8)
         return syms
 
     def map_16qam(self, bit_vec):
@@ -862,6 +872,7 @@ class QAMModulator:
     #   M : mapper
         2 : map_bpsk,
         4 : map_qpsk,
+        8 : map_8psk,
        16 : map_16qam,
        64 : map_64qam,
       256 : map_256qam,
@@ -872,6 +883,7 @@ class QAMModulator:
     #   M : kmod
         2 : 1,
         4 : 1/np.sqrt(2),
+        8 : 1,
        16 : 1/np.sqrt(10),
        64 : 1/np.sqrt(42),
       256 : 1/np.sqrt(170),
@@ -880,6 +892,7 @@ class QAMModulator:
     # symbol lookup tables
     sym_luts = {
     #   M : lut
+        8 : np.array([ 3, 4, 2, 1, 6, 5, 7, 0]),
        16 : np.array([-3,-1, 3, 1]),
        64 : np.array([-7,-5,-1,-3, 7, 5, 1, 3]),
       256 : np.array([-15,-13,- 9,-11,- 1,- 3,- 7,- 5, 15, 13,  9, 11,  1,  3,  7,  5]),
@@ -890,6 +903,7 @@ class QAMModulator:
     #   M :  str
         2 : 'BPSK',
         4 : 'QPSK',
+        8 : '8QPSK',
        16 : '16QAM',
        64 : '64QAM',
       256 : '256QAM',
