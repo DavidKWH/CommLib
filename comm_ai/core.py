@@ -276,51 +276,61 @@ class Channel:
     channel generation functions
     '''
     def gen_diagonal_ch(self, N, N_tx, N_rx):
-        assert(N_tx == N_rx)
         p = self.p
+        N_min = min(N_rx, N_tx)
         # generate random sv's
-        sv_mat = rnd.uniform(low=p.u_a, high=p.u_b, size=(N,N_tx))
-        S_list = [np.diag(sv) for sv in sv_mat]
-        S_tsr = np.array(S_list)
+        sv_mat = rnd.uniform(low=p.u_a, high=p.u_b, size=(N,N_min))
+        # allocate memory for chnannels
+        H_tsr = np.zeros((N, N_rx, N_tx))
+        # in-place assignment
+        for (H, sv) in zip(H_tsr, sv_mat):
+            H[:N_min,:N_min] = np.diag(sv)
 
-        return S_tsr
+        return H_tsr
 
     def gen_ch_from_sv_dist(self, N, N_tx, N_rx):
-        # generate matrices with specific sv distribution for DNN training
-        assert(N_tx == N_rx)
+        '''generate matrices with specific sv distribution for DNN training'''
         from scipy.stats import unitary_group
         p = self.p
+        N_min = min(N_rx, N_tx)
 
         # generate random sv's
-        sv_mat = rnd.uniform(low=p.u_a, high=p.u_b, size=(N,N_tx))
+        sv_mat = rnd.uniform(low=p.u_a, high=p.u_b, size=(N,N_min))
         # generate random unitary matrices
-        U_tsr = unitary_group.rvs(dim=N_tx, size=N)
+        U_tsr = unitary_group.rvs(dim=N_rx, size=N)
         V_tsr = unitary_group.rvs(dim=N_tx, size=N)
-        S_list = [np.diag(sv) for sv in list(sv_mat)]
-        S_tsr = np.array(S_list)
+        S_tsr = np.zeros((N, N_rx, N_tx))
+        # in-place assignment
+        for (S, sv) in zip(S_tsr, sv_mat):
+            S[:N_min,:N_min] = np.diag(sv)
 
         H = U_tsr @ S_tsr @ V_tsr
 
         return H
 
     def gen_rayleigh_ch(self, N, N_tx, N_rx):
-        #print('gen_rayleigh_ch, batch_fixed=', self.batch_fixed)
-        # assume square matrix
-        assert(N_tx == N_rx)
+        '''
+        scale channel such that the noiseless
+        received signal at each antennae is 1
+
+        Add batch_fixed mode for DNN training
+        '''
         scale = 1 / np.sqrt(N_tx)
 
         if self.batch_fixed:
             # repeat H N-times
-            H = scale * crandn(N_tx, N_rx)
+            H = scale * crandn(N_rx, N_tx)
             H_tsr = np.tile(H, (N,1,1))
         else:
-            H_tsr = scale * crandn(N, N_tx, N_rx)
+            H_tsr = scale * crandn(N, N_rx, N_tx)
 
         return H_tsr
 
     def gen_identity_ch(self, N, N_tx, N_rx):
-        H = np.identity(N_tx).astype(complex)
-        return np.tile(H,(N,1)).reshape(N, N_tx, N_rx)
+        N_min = min(N_rx, N_tx)
+        H = np.zeros((N_rx, N_tx), dtype=complex)
+        H[:N_min,:N_min] = np.identity(N_min)
+        return np.tile(H,(N,1)).reshape(N, N_rx, N_tx)
 
 
     # channel selection
@@ -481,7 +491,7 @@ class Demodulator:
     def compute_llrs(self, y_tsr, h_tsr, n_var_tsr, scaling=True):
         '''
         compute exact LLRs from compatible Y,H
-        assume noise variance given in params
+        NOTE: assume noise variance given in params
         NOTE: noise variance is needed to compute exact LLRs.
               In the case of MI-estimation and min-sum decoding,
               the LLRs can be left unscaled without degrading
@@ -542,23 +552,6 @@ class Demodulator:
 
         return lambda_mat
 
-class OneBitMLDemod(Demodulator):
-    '''
-    Compute the LLRs for ML 1-bit receiver
-    '''
-
-    def __init__(self, p,
-                 modulator = None,
-                 maxlog_approx = False
-                 ):
-        super().__init__(p, modulator, maxlog_approx)
-
-    def compute_llrs(self, y_tsr, h_tsr, n_var_tsr, scaling=True):
-        '''
-        compute exact LLR for 1-bit receiver
-        '''
-        pass
-
 ################################################################################
 # symbol detector classes
 ################################################################################
@@ -566,7 +559,7 @@ class SymbolEstimator:
     '''
     Symbol estimation (perform recovery of x_hat)
     Assume Linear Gaussian Channel, i.e.
-        y = Ax + n
+        y = Hx + n
 
     Inputs:
         h_tsr:     channel realizations
@@ -582,13 +575,13 @@ class SymbolEstimator:
         ''' assume noise variance is n_var * I '''
         n_var = n_var.item() # one item in array
         A = np.matrix(w_mat)
-        Sigma = n_var * A * A.H
+        Sigma = n_var * A @ A.H
         return Sigma
 
     def zf_est(self, y_tsr, h_tsr, n_var_tsr):
 
-        h_inv_tsr = la.pinv(h_tsr)
-        w_tsr = h_inv_tsr
+        h_pinv_tsr = la.pinv(h_tsr)
+        w_tsr = h_pinv_tsr
         x_hat_tsr = w_tsr @ y_tsr
 
         return x_hat_tsr, w_tsr
@@ -600,7 +593,7 @@ class SymbolEstimator:
             A = np.matrix(h_mat)
             N_tx = h_mat.shape[1]
             I = n_var * np.identity(N_tx)
-            return la.inv(A.H @ A + I) * A.H
+            return la.inv(A.H @ A + I) @ A.H
 
         w_tsr = [ mmse_weight(h_mat, n_var) for (h_mat, n_var) in zip(h_tsr, n_var_tsr) ]
         x_hat_tsr = w_tsr @ y_tsr
