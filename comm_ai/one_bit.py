@@ -1,7 +1,8 @@
 # general dependencies
 import numpy as np
 import numpy.linalg as la
-import numpy.random as rnd
+# helper functions
+from functools import partial
 
 from .core import QAMModulator
 from scipy.stats import norm
@@ -41,7 +42,7 @@ class BussgangEstimator:
         def bmmse_weight(A, S_n):
             ''' NOTE: A is a tall matrix '''
             A = np.matrix(A)
-            return A.H @ la.inv(A.H @ A + S_n)
+            return A.H @ la.inv(A @ A.H + S_n)
 
         W_tsr = [ bmmse_weight(A, S_n) for (A, S_n) in zip(A_tsr, S_n_tsr) ]
         x_hat_tsr = W_tsr @ y_tsr
@@ -65,6 +66,7 @@ class BussgangEstimator:
             return S_r
 
         def compute_A(S_r, H):
+            ''' A = FH '''
             scale = np.sqrt(2./np.pi)
             F = scale * diag_mat( S_r, exp=-0.5 )
             A = F @ H
@@ -73,11 +75,11 @@ class BussgangEstimator:
         def compute_S_n(S_r, n_var):
             # compute S_n
             diag_mat_S_h = diag_mat( S_r, exp=-0.5 )
-            diag_mat_S_w = diag_mat( S_r, exp=-1 )
+            diag_mat_S_w = diag_mat( S_r, exp=-1.0 )
             T_2 = diag_mat_S_h @ S_r @ diag_mat_S_h
-            T_2_re = np.clip(T_2.real, -1., 1.)
-            T_2_im = np.clip(T_2.imag, -1., 1.)
-            T_1 = np.arcsin(T_2_re) + 1j*np.arcsin(T_2_im)
+            np.clip(T_2.real, -1., 1., out=T_2.real)
+            np.clip(T_2.imag, -1., 1., out=T_2.imag)
+            T_1 = np.arcsin(T_2.real) + 1j*np.arcsin(T_2.imag)
             S_n = 2./np.pi * (T_1 - T_2 + n_var * diag_mat_S_w)
             return S_n
 
