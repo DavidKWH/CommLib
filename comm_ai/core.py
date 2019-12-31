@@ -587,15 +587,32 @@ class SymbolEstimator:
         return x_hat_tsr, w_tsr
 
     def mmse_est(self, y_tsr, h_tsr, n_var_tsr):
+        '''
+        Dimensions:
+            y_tsr.shape     = (N, N_rx, 1)
+            h_tsr.shape     = (N, N_rx, N_tx)
+            n_var_tsr.shape = (N, 1, 1)
+        '''
+#        def mmse_weight(h_mat, n_var):
+#            ''' matrix.H is a property function '''
+#            A = np.matrix(h_mat)
+#            N_tx = h_mat.shape[1]
+#            I = n_var * np.identity(N_tx)
+#            return la.inv(A.H @ A + I) @ A.H
+#
+#        w_tsr = [ mmse_weight(h_mat, n_var) for (h_mat, n_var) in zip(h_tsr, n_var_tsr) ]
 
-        def mmse_weight(h_mat, n_var):
-            ''' matrix.H is a property function '''
-            A = np.matrix(h_mat)
-            N_tx = h_mat.shape[1]
-            I = n_var * np.identity(N_tx)
-            return la.inv(A.H @ A + I) @ A.H
+        N_tx = h_tsr.shape[2]
+        I = np.identity(N_tx)
+        I = I[None,...] # for broadcasting
+        H = h_tsr
+        n_var = n_var_tsr
 
-        w_tsr = [ mmse_weight(h_mat, n_var) for (h_mat, n_var) in zip(h_tsr, n_var_tsr) ]
+        # implement vectorized version of (see mmse_weight() above)
+        # la.inv(H.H @ H + n_var * I) @ H.H
+        H_herm = np.conj(H).swapaxes(1,2)
+        w_tsr = la.inv(H_herm @ H + n_var * I) @ H_herm
+
         x_hat_tsr = w_tsr @ y_tsr
 
         return x_hat_tsr, w_tsr
