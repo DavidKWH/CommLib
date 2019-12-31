@@ -8,8 +8,21 @@ from .core import QAMModulator
 from scipy.stats import norm
 
 # define diag_matrix operation
-def diag_mat(A, exp=1.):
-    return np.diag( np.diag(A)**exp )
+#def diag_mat(A, exp=1.):
+#    return np.diag( np.diag(A)**exp )
+
+def diag_mat_v(A_tsr, exp=1.):
+    ''' vectorized version of diag_mat() '''
+    # use einstein's notation
+    # extract diagonal of the last two axes
+    diag_mat = np.einsum('...ii->...i', A_tsr)
+    diag_mat = diag_mat**exp
+    # the diagonal should be reals
+    diag_mat = diag_mat.real
+    diag_tsr = np.zeros(A_tsr.shape)
+    # assign to the diagonal of submatrices a vector of values
+    np.einsum('...ii->...i', diag_tsr)[:,:] = diag_mat
+    return diag_tsr
 
 class BussgangEstimator:
     '''
@@ -23,11 +36,11 @@ class BussgangEstimator:
         self.est = partial(self.estimators[mode], self)
         print(f'Bussgang Estimator mode = {mode}')
 
-    def covar(self, w_mat, S_r):
-        ''' noise variance S_r '''
-        A = np.matrix(w_mat)
-        Sigma = A @ S_r @ A.H
-        return Sigma
+#    def covar(self, w_mat, S_r):
+#        ''' noise variance S_r '''
+#        A = np.matrix(w_mat)
+#        Sigma = A @ S_r @ A.H
+#        return Sigma
 
     def bzf_est(self, y_tsr, A_tsr, S_n_tsr):
 
@@ -39,12 +52,20 @@ class BussgangEstimator:
 
     def bmmse_est(self, y_tsr, A_tsr, S_n_tsr):
 
-        def bmmse_weight(A, S_n):
-            ''' NOTE: A is a tall matrix '''
-            A = np.matrix(A)
-            return A.H @ la.inv(A @ A.H + S_n)
+        #def bmmse_weight(A, S_n):
+        #    ''' NOTE: A is a tall matrix '''
+        #    A = np.matrix(A)
+        #    return A.H @ la.inv(A @ A.H + S_n)
 
-        W_tsr = [ bmmse_weight(A, S_n) for (A, S_n) in zip(A_tsr, S_n_tsr) ]
+        #W_tsr = [ bmmse_weight(A, S_n) for (A, S_n) in zip(A_tsr, S_n_tsr) ]
+
+        # vectorized version of
+        # A.H @ la.inv(A @ A.H + S_n)
+        A = A_tsr
+        S_n = S_n_tsr
+        A_herm = np.conj(A).swapaxes(1,2)
+        W_tsr = A_herm @ la.inv(A @ A_herm + S_n)
+
         x_hat_tsr = W_tsr @ y_tsr
 
         return x_hat_tsr, W_tsr
@@ -56,39 +77,79 @@ class BussgangEstimator:
     }
 
     def estimate(self, y_tsr, h_tsr, n_var_tsr):
+        '''
+        Dimensions:
+            y_tsr.shape     = (N, N_rx, 1)
+            h_tsr.shape     = (N, N_rx, N_tx)
+            n_var_tsr.shape = (N, 1, 1)
 
-        # compute equivalent channel parameters (S_r, A, S_n)
-        def compute_S_r(H, n_var):
-            H = np.matrix(H)
-            N_rx = H.shape[0]
-            I = n_var * np.identity(N_rx)
-            S_r = H @ H.H + I
-            return S_r
+        TODO: consider vectorizing computation for speed
+        NOTE: np.vectorize() is syntaxtic sugar (essentially for loops) does not
+              offer speed ups.
+        '''
 
-        def compute_A(S_r, H):
-            ''' A = FH '''
-            scale = np.sqrt(2./np.pi)
-            F = scale * diag_mat( S_r, exp=-0.5 )
-            A = F @ H
-            return A
+        # compute equivalent linear channel parameters (S_r, A, S_n)
+#        def compute_S_r(H, n_var):
+#            H = np.matrix(H)
+#            N_rx = H.shape[0]
+#            I = n_var * np.identity(N_rx)
+#            S_r = H @ H.H + I
+#            return S_r
+#
+#        def compute_A(S_r, H):
+#            ''' A = FH '''
+#            scale = np.sqrt(2./np.pi)
+#            F = scale * diag_mat( S_r, exp=-0.5 )
+#            A = F @ H
+#            return A
+#
+#        def compute_S_n(S_r, n_var):
+#            # compute S_n
+#            diag_mat_S_h = diag_mat( S_r, exp=-0.5 )
+#            diag_mat_S_w = diag_mat( S_r, exp=-1.0 )
+#            T_2 = diag_mat_S_h @ S_r @ diag_mat_S_h
+#            np.clip(T_2.real, -1., 1., out=T_2.real)
+#            np.clip(T_2.imag, -1., 1., out=T_2.imag)
+#            T_1 = np.arcsin(T_2.real) + 1j*np.arcsin(T_2.imag)
+#            S_n = 2./np.pi * (T_1 - T_2 + n_var * diag_mat_S_w)
+#            return S_n
 
-        def compute_S_n(S_r, n_var):
-            # compute S_n
-            diag_mat_S_h = diag_mat( S_r, exp=-0.5 )
-            diag_mat_S_w = diag_mat( S_r, exp=-1.0 )
-            T_2 = diag_mat_S_h @ S_r @ diag_mat_S_h
-            np.clip(T_2.real, -1., 1., out=T_2.real)
-            np.clip(T_2.imag, -1., 1., out=T_2.imag)
-            T_1 = np.arcsin(T_2.real) + 1j*np.arcsin(T_2.imag)
-            S_n = 2./np.pi * (T_1 - T_2 + n_var * diag_mat_S_w)
-            return S_n
+        #S_r_tsr = [ compute_S_r(h_mat, n_var) for (h_mat, n_var) in zip(h_tsr, n_var_tsr) ]
+        #A_tsr = [ compute_A(S_r, h_mat) for (S_r, h_mat) in zip(S_r_tsr, h_tsr) ]
+        #S_n_tsr = [ compute_S_n(S_r, n_var) for (S_r, n_var) in zip(S_r_tsr, n_var_tsr) ]
 
-        S_r_tsr = [ compute_S_r(h_mat, n_var) for (h_mat, n_var) in zip(h_tsr, n_var_tsr) ]
-        A_tsr = [ compute_A(S_r, h_mat) for (S_r, h_mat) in zip(S_r_tsr, h_tsr) ]
-        S_n_tsr = [ compute_S_n(S_r, n_var) for (S_r, n_var) in zip(S_r_tsr, n_var_tsr) ]
+        N_rx = h_tsr.shape[1]
+        H = h_tsr
+        I = np.identity(N_rx)
+        I = I[None,...]
+        n_var = n_var_tsr
+
+        # vectorized version of
+        # H @ H.H + n_var * I
+        H_herm = np.conj(H).swapaxes(1,2)
+        S_r_tsr = H @ H_herm + n_var * I
+
+        # vectorized version of compute_A()
+        scale = np.sqrt(2./np.pi)
+        diag_tsr_S_h = diag_mat_v( S_r_tsr, exp=-0.5 )
+        F = scale * diag_tsr_S_h
+        A_tsr = F @ H
+
+        # vectorized version of compute_S_n()
+        diag_tsr_S_w = diag_mat_v( S_r_tsr, exp=-1.0 )
+        T_2 = diag_tsr_S_h @ S_r_tsr @ diag_tsr_S_h
+        np.clip(T_2.real, -1., 1., out=T_2.real)
+        np.clip(T_2.imag, -1., 1., out=T_2.imag)
+        T_1 = np.arcsin(T_2.real) + 1j*np.arcsin(T_2.imag)
+        S_n_tsr = 2./np.pi * (T_1 - T_2 + n_var * diag_tsr_S_w)
 
         x_hat_tsr, w_tsr = self.est(y_tsr, A_tsr, S_n_tsr)
-        covar_tsr = [ self.covar(w_mat, S_n) for (w_mat, S_n) in zip(w_tsr, S_n_tsr) ]
+        #covar_tsr = [ self.covar(w_mat, S_n) for (w_mat, S_n) in zip(w_tsr, S_n_tsr) ]
+        # vectorized version of covar()
+        W = w_tsr
+        W_herm = np.conj(W).swapaxes(1,2)
+        covar_tsr = W @ S_n_tsr @ W_herm
+
         return x_hat_tsr, covar_tsr
 
 
