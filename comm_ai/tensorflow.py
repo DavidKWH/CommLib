@@ -138,6 +138,13 @@ def get_optimizer(p):
     optimizer = Optimizer(**kwargs)
 
 ################################################################################
+# Comm functions
+################################################################################
+def quantize_o(x_cpx):
+    '''perform component wise quantization'''
+    return np.sign(x_cpx.real) + 1j* np.sign(x_cpx.imag)
+
+################################################################################
 # Comm dataset V2
 ################################################################################
 class CommDataSet:
@@ -151,7 +158,8 @@ class CommDataSet:
                           maxlog_approx=False,
                           mode='none',
                           test=False,
-                          transform=None):
+                          transform=None,
+                          one_bit=False):
         assert( hasattr(p,mode) )
         self.p = p
         self.n_iter = p.n_test_steps if test else p.n_train_steps
@@ -167,6 +175,9 @@ class CommDataSet:
         self.channel = Channel(p, mode)
         self.transmit = Transmitter(p, modulator=self.mod, training=True)
         self.in_transform = transform
+        self.one_bit = one_bit
+
+        print("CommDataSet one_bit mode =", self.one_bit)
 
     def __repr__(self):
         return "Communication dataset iterable"
@@ -213,6 +224,9 @@ class CommDataSet:
         syms_tsr, bit_tsr = transmit(N)
         # apply channel and noise
         y_tsr, h_tsr, n_var_tsr = channel(syms_tsr)
+        # one bit quantization
+        if self.one_bit:
+            y_tsr = quantize_o(y_tsr)
         # generate LLRs (test mode)
         if llr_output: lambda_mat = demod(y_tsr, h_tsr, n_var_tsr)
 
