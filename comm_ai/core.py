@@ -188,31 +188,48 @@ class Transmitter:
     def __call__(self, *args, **kwargs):
         return self.generate(*args, **kwargs)
 
-    def generate(self, N=None):
+    def generate(self, N=None, debug=False):
         '''
         generate raw payload bits and symbols
-        NOTE: check runtime pre-conditions below
-        NOTE: return bit vectors as list easier to handle
+
+        Three mode exists:
+
+            1. Random uncoded payload generated symbols
+            2. Random encoded payload generated symbols
+            3. Special mode that allows user to specify
+               the number of symbols
+
+        Recommend using mode 1 for uncoded BER sims, mode 2 for coded BER
+        ims.  Use mode 3 for analysis related to the distribution such as
+        MI and raw distribution of LLRs.
+
+        In the simplest case, return bit vectors as list for BER sims.
         '''
         p = self.p
         mod = self.mod
         enc = self.enc
         training = self.training
+        tensor_output = training or debug
 
-        #NOTE: allow N only in training mode
-        assert( not(training == False and N != None) )
+        #NOTE: allow N only in training|debug modes
+        assert( not(tensor_output == False and N != None) )
+        # sanity check, should never pass in N if encoder used
+        #assert( (enc and N == None) or (not enc and N) )
 
         # per stream processing
         ####################################
         if enc == None:
+            # Use the N_syms parameter if encoder not defined
+            # otherwise, use N from function argument
             N_raw = p.N_syms if N == None else N
-            #raw_bit_tsr = rnd.randint(2, size=(p.N_sts, p.N_syms, p.nbps))
             raw_bit_tsr = rnd.randint(2, size=(p.N_sts, N_raw, p.nbps))
-            bit_mat = raw_bit_tsr.reshape(p.N_sts, -1)
-            raw_bits_list = list(bit_mat)
+            raw_bit_mat = raw_bit_tsr.reshape(p.N_sts, -1)
+            raw_bits_list = list(raw_bit_mat)
             mapper_bits_list = raw_bits_list
         else:
-            raw_bit_tsr = rnd.randint(2, size=(p.N_sts, p.N_raw, p.nbps))
+            # compute N_raw using encoder/decoder parameters
+            N_raw = p.dec.K // p.nbps
+            raw_bit_tsr = rnd.randint(2, size=(p.N_sts, N_raw, p.nbps))
             raw_bit_mat = raw_bit_tsr.reshape(p.N_sts, -1)
             raw_bits_list = list(raw_bit_mat)
             # encode raw bits, produces N_sts codewords
@@ -223,25 +240,28 @@ class Transmitter:
         syms_list = [ mod.map(bits) for bits in mapper_bits_list ]
         syms = np.array(syms_list)
 
+        # Dimensions of arrays:
+        # mapper_bits.shape = ( N_sts x dec.N )
+        # syms.shape = ( N_sts x N_syms ), N_syms = dec.N / nbps
+
         # convert to stacked matrix form
-        # for element-wise matrix multiplication using @
-        # i.e., the first dimension is turned into a list
-        #       containing elements in the remaining dimensions
-        # NOTE: a @ b <=> np.matmul(a,b)
+        # transpose == swap axes
         # syms.shape = (N_sts, N_syms)
         syms_tr = syms.transpose()
         # syms_tr.shape = (N_syms, N_sts)
-        N_syms = N if training else p.N_syms
-        #sym_tsr = syms_tr.reshape(p.N_syms, p.N_sts, 1)
+        N_syms = N if tensor_output else p.N_syms
         sym_tsr = syms_tr.reshape(N_syms, p.N_sts, 1)
 
         # output processing
-        if training:
-            # reformat bits for training
+        # NOTE: bits_output format depends on whether training and debug mode
+        #       check then tensor_output code above
+        if tensor_output:
+            # reformat bits
             # list(bit_str) = N_sts elements of shape (N, p.nbps)
             bit_mat_trn = np.concatenate(list(raw_bit_tsr), axis=1)
             # bit_mat_trn.shape = (N, N_sts * nbps)
-            bit_tsr_trn = bit_mat_trn.reshape(N, p.N_sts, p.nbps)
+            #bit_tsr_trn = bit_mat_trn.reshape(N_raw, p.N_sts, p.nbps)
+            bit_tsr_trn = bit_mat_trn
             bits_output = bit_tsr_trn
         else:
             bits_output = raw_bits_list
