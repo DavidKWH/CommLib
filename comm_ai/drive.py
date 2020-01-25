@@ -64,9 +64,15 @@ cred_name = os.path.join(dirname, cred_name)
 assert os.path.exists(cred_name), f'missing credentials in {dirname}'
 #assert os.path.exists(token_name), f'missing token storage in {dirname}'
 
-service = get_authenticated(SCOPES,
-                            credential_file=cred_name,
-                            token_file=token_name)
+# module level object
+_service = None
+
+def get_service():
+    if not _service:
+        _service = get_authenticated(SCOPES,
+                                    credential_file=cred_name,
+                                    token_file=token_name)
+    return _service
 
 ################################################################################
 # support functions
@@ -102,7 +108,7 @@ def get_folder(fname, parent):
     query = f"{root_folder_query} and {folders_only_query} and {folder_name_query} and {not_trash_query}"
     fields = 'nextPageToken, files(id, name)'
 
-    response = service.files().list(q=query,
+    response = get_service().files().list(q=query,
                                     spaces='drive',
                                     fields=fields).execute()
 
@@ -144,7 +150,7 @@ def create_folder(fname, parent):
         'mimeType': 'application/vnd.google-apps.folder',
     }
 
-    file = service.files().create(body=file_metadata,
+    file = get_service().files().create(body=file_metadata,
                                   fields='id').execute()
 
     folder_id = file.get('id')
@@ -165,7 +171,7 @@ def get_file(fname, parent):
     query = f"{folder_query} and {name_query} and {not_trash_query}"
     fields = 'nextPageToken, files(id, name)'
 
-    response = service.files().list(q=query,
+    response = get_service().files().list(q=query,
                                     spaces='drive',
                                     fields=fields).execute()
 
@@ -207,7 +213,7 @@ def create_file(filepath, parent=None, mime_type=None):
 
     media = MediaFileUpload(filepath, mimetype=mime_type, resumable=True)
 
-    file = service.files().create(body=metadata,
+    file = get_service().files().create(body=metadata,
                                   media_body=media,
                                   fields='id').execute()
     #print(f'File ID: {file["id"]}')
@@ -237,7 +243,7 @@ def update_file(filepath, file_id, mime_type=None):
 
     media = MediaFileUpload(filepath, mimetype=mime_type, resumable=True)
 
-    file = service.files().update(body=metadata,
+    file = get_service().files().update(body=metadata,
                                   media_body=media,
                                   fileId=file_id).execute()
     return file_id
@@ -265,7 +271,7 @@ def create_bytes(buf, filepath, parent=None, text=True):
 
     media = MediaInMemoryUpload(buf, mimetype=mime_type, resumable=True)
 
-    file = service.files().create(body=metadata,
+    file = get_service().files().create(body=metadata,
                                   media_body=media,
                                   fields='id').execute()
     #print(f'File ID: {file["id"]}')
@@ -293,7 +299,7 @@ def update_bytes(buf, filepath, file_id, text=True):
 
     media = MediaInMemoryUpload(buf, mimetype=mime_type, resumable=True)
 
-    file = service.files().update(body=metadata,
+    file = get_service().files().update(body=metadata,
                                   media_body=media,
                                   fileId=file_id).execute()
 
@@ -304,7 +310,7 @@ def download_bytes(filepath, file_id, text=True):
     download content into local filepath [not verified]
     '''
 
-    request = service.files().get_media(fileId=file_id)
+    request = get_service().files().get_media(fileId=file_id)
 
     #fh = io.FileIO(filepath, mode='w')
     fh = io.StringIO()
