@@ -147,7 +147,7 @@ class Receiver:
         if dec == None:
             # generate hard decisions
             dec_bits_list = [ llrs < 0  for llrs in llrs_list ]
-            return dec_bits_list, llrs_list
+            return dec_bits_list, llrs_list, None
         else:
             # decode llrs
             dec_out = [ dec.decode(llrs) for llrs in llrs_list ]
@@ -219,8 +219,8 @@ class Transmitter:
         # per stream processing
         ####################################
         if enc == None:
-            # Use the N_syms parameter if encoder not defined
-            # otherwise, use N from function argument
+            # Use N from function argument if encoder not defined
+            # otherwise, use the N_syms parameter
             N_raw = p.N_syms if N == None else N
             raw_bit_tsr = rnd.randint(2, size=(p.N_sts, N_raw, p.nbps))
             raw_bit_mat = raw_bit_tsr.reshape(p.N_sts, -1)
@@ -385,10 +385,28 @@ class Channel:
         n_tsr = n_std_tsr * std_n_tsr
         return n_tsr, n_var_tsr
 
+    def gen_fixed_snr(self, N, N_rx):
+        p = self.p
+        n_std = 10**(-p.snr_db/20)
+        std_n_tsr = crandn(N, N_rx, 1)
+        n_tsr = n_std * std_n_tsr
+        snr_tsr_db = p.snr_db * np.ones((N,1,1))
+        return n_tsr, snr_tsr_db
+
+    def gen_rand_snr(self, N, N_rx):
+        p = self.p
+        snr_tsr_db = rnd.randint(p.snr_lo, p.snr_hi+1, size=(N,1,1))
+        n_std_tsr = 10**(-snr_tsr_db/20)
+        std_n_tsr = crandn(N, N_rx, 1)
+        n_tsr = n_std_tsr * std_n_tsr
+        return n_tsr, snr_tsr_db
+
     # noise generation
     noise_table = {
         'fixed_var' : gen_fixed_var,
         'rand_var' : gen_rand_var,
+        'fixed_snr' : gen_fixed_snr,
+        'rand_snr' : gen_rand_snr,
         'noiseless' : gen_noiseless,
     }
 
