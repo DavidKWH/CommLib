@@ -432,6 +432,128 @@ class GraphConv(Layer):
             return self.activation(x)
         return x
 
+class EFLM(Layer):
+    '''
+    Implements Embedded feature-wise linear modulation layer
+    '''
+    def __init__(self, units, depth,
+                 kernel_initializer=None,
+                 **kwargs):
+        super().__init__(**kwargs)
+        self.units = units
+        self.depth = depth
+        self.initializer = kernel_initializer
+
+    def build(self, input_shape):
+        self.alpha = self.add_weight(name='alpha', # needed for tf.saved_model.save()
+                                     shape=(self.depth, self.units),
+                                     initializer=self.initializer,
+                                     trainable=True)
+
+        self.beta = self.add_weight(name='beta', # needed for tf.saved_model.save()
+                                    shape=(self.depth, self.units),
+                                    initializer=self.initializer,
+                                    trainable=True)
+
+    def call(self, inputs, training=False):
+        '''
+        dimensions:
+            x.shape = (N, units)
+            s.shape = (N,)
+            s_o.shape = (N, depth)
+            alpha.shape = (N, units)
+            beta.shape = (N, units)
+        '''
+        # select alpha and beta for FLM
+        x = inputs[0] # features
+        s = inputs[1] # SNR (integers)
+        s_o = tf.one_hot(s, self.depth)
+        s_o = tf.squeeze(s_o, axis=1)
+        alpha = tf.matmul(s_o, self.alpha)
+        beta = tf.matmul(s_o, self.beta)
+
+        # compute affine transformation
+        output = alpha * x + beta
+        return output
+
+class FLMResidual(Layer):
+    '''
+    Implements residual layer (Kaiming He et al., 2015)
+    Added batch normalization option
+    Add feature wise linear modulation
+
+    NOTE: if input and output dimensions are not equal
+          specify unmatched_dimensions=True, the residual
+          layer becomes: f(x) + A*x
+          instead of:    f(x) + x
+    '''
+    def __init__(self, units,
+                       activation=None,
+                       kernel_initializer=None,
+                       batch_normalization=False,
+                       depth=None,
+                       feature_linear_modulation=False,
+                       unmatched_dimensions=False):
+        super().__init__()
+
+        assert( activation is not None )
+        assert( kernel_initializer is not None )
+
+        flm = feature_linear_modulation
+        batch_norm = batch_normalization
+        use_bias = not batch_normalization
+        dense_linear_layer = partial(Dense, activation=None,
+                                            use_bias=use_bias,
+                                            kernel_initializer=kernel_initializer)
+        batch_norm_layer = BatchNormalization
+
+        self.dl_layer_1 = dense_linear_layer(units)
+        self.dl_layer_2 = dense_linear_layer(units)
+        self.bn_layer_1 = batch_norm_layer() if batch_norm else None
+        self.bn_layer_2 = batch_norm_layer() if batch_norm else None
+
+        self.flm_layer_1 = EFLM(units, depth) if flm else None
+        self.flm_layer_2 = EFLM(units, depth) if flm else None
+        self.flm = flm
+
+        self.activation = activations.get(activation)
+        self.batch_norm = batch_norm
+        self.unmatched_dims = unmatched_dimensions
+        self.initializer = kernel_initializer
+        self.units = units
+
+    def build(self, input_shape):
+        assert isinstance( input_shape, (list, tuple) )
+        main_shape = input_shape[0]
+        if self.unmatched_dims:
+            assert( main_shape[-1] != self.units )
+            self.w = self.add_weight(name='W', # needed for tf.saved_model.save()
+                                    shape=(input_shape[-1], self.units),
+                                    initializer=self.initializer,
+                                    trainable=True)
+            self.transform = lambda x : tf.matmul( x, self.w )
+        else:
+            assert( main_shape[-1] == self.units )
+            self.transform = lambda x : x
+
+    def call(self, inputs, training=False):
+        batch_norm = self.batch_norm
+        flm = self.flm
+        x = inputs[0]
+        s = inputs[1]
+        x = self.dl_layer_1(x)
+        if batch_norm: x = self.bn_layer_1(x, training=training)
+        if flm: x = self.flm_layer_1([x, s])
+        x = self.activation(x)
+        x = self.dl_layer_2(x)
+        if batch_norm: x = self.bn_layer_2(x, training=training)
+        if flm: x = self.flm_layer_2([x, s])
+        x = x + self.transform(inputs[0])
+        return self.activation(x)
+
+    def num_layers(self):
+        return 2
+
 
 class HyperDense(Layer):
     '''

@@ -224,6 +224,8 @@ class CommDataSet:
         syms_tsr, bit_tsr = transmit(N)
         # apply channel and noise
         y_tsr, h_tsr, n_var_tsr = channel(syms_tsr)
+        # SNR is multiplexed on the same channel output...
+        snr_tsr = n_var_tsr
         # one bit quantization
         if self.one_bit:
             y_tsr = quantize_o(y_tsr)
@@ -235,6 +237,7 @@ class CommDataSet:
         y_mat = y_tsr.reshape(N,-1)
         bit_mat = bit_tsr.reshape(N,-1)
         n_var_mat = n_var_tsr.reshape(N,-1)
+        snr_mat = snr_tsr.reshape(N,-1)
 
         # symbol output?
         sym_vec = bv2dec(bit_mat) if sym_output else None
@@ -246,6 +249,7 @@ class CommDataSet:
         h_mat = tf.convert_to_tensor(h_mat, dtype=tf.float32)
         y_mat = tf.convert_to_tensor(y_mat, dtype=tf.float32)
         n_var_mat = tf.convert_to_tensor(n_var_mat, dtype=tf.float32)
+        snr_mat = tf.convert_to_tensor(snr_mat, dtype=tf.int32)
         bit_mat = tf.convert_to_tensor(bit_mat, dtype=tf.bool)
         # conditional outputs
         lambda_mat = tf.convert_to_tensor(lambda_mat, dtype=tf.float32) if llr_output else None
@@ -253,6 +257,8 @@ class CommDataSet:
 
         # output processing
         in_seq = [y_mat, h_mat, n_var_mat]
+        if p.train.noise_type in ('rand_snr', 'fixed_snr'):
+            in_seq = [y_mat, h_mat, snr_mat]
         if in_transform: in_seq = in_transform(in_seq)
         out_seq = [bit_mat, sym_vec]
         aux_out = lambda_mat
@@ -274,6 +280,8 @@ class DnnDemod:
     '''
     Encapsulate trained Tensorflow model
     Implements Demodulator interface
+
+    NOTE: Use default mode for evaluating DNN model
     '''
 
     def __init__(self, p):
@@ -286,22 +294,31 @@ class DnnDemod:
         return self.compute_llrs(*args, **kwargs)
 
     def compute_llrs(self, y_tsr, h_tsr, n_var_tsr, scaling=True):
+        p = self.p
         model = self.model
         N = y_tsr.shape[0]
+
+        # FIXME:specify dtype
+        #dtype = tf.float64
+        dtype = tf.float32
 
         # flatten dimensions i>1
         h_mat = h_tsr.reshape(N,-1)
         y_mat = y_tsr.reshape(N,-1)
         n_var_mat = n_var_tsr.reshape(N,-1)
+        snr_mat = n_var_mat
         # convert to reals
         h_mat = cplx2reals(h_mat)
         y_mat = cplx2reals(y_mat)
         # convert to tensors
-        h_mat = tf.convert_to_tensor(h_mat, dtype=tf.float32)
-        y_mat = tf.convert_to_tensor(y_mat, dtype=tf.float32)
-        n_var_mat = tf.convert_to_tensor(n_var_mat, dtype=tf.float32)
+        h_mat = tf.convert_to_tensor(h_mat, dtype=dtype)
+        y_mat = tf.convert_to_tensor(y_mat, dtype=dtype)
+        n_var_mat = tf.convert_to_tensor(n_var_mat, dtype=dtype)
+        snr_mat = tf.convert_to_tensor(snr_mat, dtype=tf.int32)
         # input processing
         in_seq = [y_mat, h_mat, n_var_mat]
+        if p.default.noise_type in ('rand_snr', 'fixed_snr'):
+            in_seq = [y_mat, h_mat, snr_mat]
         logits = model(in_seq)
         llrs = - logits.numpy().astype(float)
         return llrs
