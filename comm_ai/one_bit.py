@@ -330,7 +330,8 @@ class OneBitMLDemod:
             phi_1 = np.squeeze(phi_1, axis=3)
             lhood_1 = np.prod(phi_1, axis=2)
 
-            log_sum_lhood_1 = np.log( np.sum(lhood_1, axis=1) )
+            log_eps = 1e-320 # add eps to prevent log underflow
+            log_sum_lhood_1 = np.log( np.sum(lhood_1, axis=1) + log_eps)
 
             hs_0 = h_tsr_ex @ syms_0_ex
             yhs_0 = scale * y * hs_0
@@ -338,7 +339,7 @@ class OneBitMLDemod:
             phi_0 = np.squeeze(phi_0, axis=3)
             lhood_0 = np.prod(phi_0, axis=2)
 
-            log_sum_lhood_0 = np.log( np.sum(lhood_0, axis=1) )
+            log_sum_lhood_0 = np.log( np.sum(lhood_0, axis=1) + log_eps)
 
             lambda_vec = log_sum_lhood_0 - log_sum_lhood_1
 
