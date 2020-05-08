@@ -136,13 +136,13 @@ class Receiver:
             x_hat_tsr, covar_tsr = est.estimate(y_tsr, h_tsr, n_var_tsr)
             llr_mat = demap.compute_llrs(x_hat_tsr, h_tsr, covar_tsr)
 
-        # reshape
-        llr_tsr = llr_mat.reshape(p.N_syms, p.N_sts, p.nbps)
+        # matrix dimensions
+        # llr_mat.shape = [N_syms, N_sts * nbps]
 
-        # reshuffle llrs matrix
-        # llrs_list contains N_sts llr vectors
-        llrs_list = np.split(llr_tsr, p.N_sts, axis=1)
-        llrs_list = [ llrs.reshape(-1) for llrs in llrs_list ]
+        n_bits = p.N_sts * p.nbps
+
+        llr_tsr = llr_mat.reshape(n_bits, p.dec.N)
+        llrs_list = list(llr_tsr)
 
         if dec == None:
             # generate hard decisions
@@ -228,29 +228,27 @@ class Transmitter:
             mapper_bits_list = raw_bits_list
         else:
             # compute N_raw using encoder/decoder parameters
-            N_raw = p.dec.K // p.nbps
-            raw_bit_tsr = rnd.randint(2, size=(p.N_sts, N_raw, p.nbps))
-            raw_bit_mat = raw_bit_tsr.reshape(p.N_sts, -1)
+            N_raw = p.dec.K
+            raw_bit_tsr = rnd.randint(2, size=(p.N_sts * p.nbps, N_raw))
+            raw_bit_mat = raw_bit_tsr.reshape(p.N_sts * p.nbps, -1)
             raw_bits_list = list(raw_bit_mat)
-            # encode raw bits, produces N_sts codewords
+            # encode raw bits, produces (N_sts * p.nbps) codewords
             encoded_bits_list = [ enc.encode(raw_bits) for raw_bits in raw_bits_list ]
             mapper_bits_list = encoded_bits_list
 
         # map to symbols
+        N_syms = N if tensor_output else p.dec.N
         syms_list = [ mod.map(bits) for bits in mapper_bits_list ]
         syms = np.array(syms_list)
+        # map CW across symbols
+        syms = syms.reshape(-1, p.N_sts)
 
         # Dimensions of arrays:
-        # mapper_bits.shape = ( N_sts x dec.N )
-        # syms.shape = ( N_sts x N_syms ), N_syms = dec.N / nbps
+        # mapper_bits.shape = ( N_sts, dec.N )
+        # syms.shape = ( N_syms, N_sts )
+        # syms.shape = ( N_sts x N_syms )
 
-        # convert to stacked matrix form
-        # transpose == swap axes
-        # syms.shape = (N_sts, N_syms)
-        syms_tr = syms.transpose()
-        # syms_tr.shape = (N_syms, N_sts)
-        N_syms = N if tensor_output else p.N_syms
-        sym_tsr = syms_tr.reshape(N_syms, p.N_sts, 1)
+        sym_tsr = syms.reshape(N_syms, p.N_sts, 1)
 
         # output processing
         # NOTE: bits_output format depends on whether training and debug mode
