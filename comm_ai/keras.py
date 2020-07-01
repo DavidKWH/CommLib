@@ -432,6 +432,19 @@ class GraphConv(Layer):
             return self.activation(x)
         return x
 
+class OneHot(Layer):
+    '''
+    Implements a one-hot representation conversion layer
+    '''
+    def __init__(self, depth, **kwargs):
+        super().__init__(**kwargs)
+        self.depth = depth
+
+    def call(self, input, training=False):
+        s_o = tf.one_hot(input, self.depth)
+        s_o = tf.squeeze(s_o, axis=1)
+        return s_o
+
 class EFLM(Layer):
     '''
     Implements Embedded feature-wise linear modulation layer
@@ -461,6 +474,8 @@ class EFLM(Layer):
             x.shape = (N, units)
             s.shape = (N,)
             s_o.shape = (N, depth)
+            self.alpha = (depth, units)
+            self.beta = (depth, units)
             alpha.shape = (N, units)
             beta.shape = (N, units)
         '''
@@ -553,6 +568,55 @@ class FLMResidual(Layer):
 
     def num_layers(self):
         return 2
+
+class FLMDense(Layer):
+    '''
+    Implements batch normalized dense layer (Ioffe and Szegedy, 2015)
+    Enable via the batch_normalization option
+
+    NOTE: The subclassed layer's name is inferred from the class name.
+    NOTE: The Layer class produce the correct context (i.e. name scope)
+          No special handling required
+    '''
+    def __init__(self, units,
+                       activation=None,
+                       kernel_initializer=None,
+                       depth=None,
+                       feature_linear_modulation=False,
+                       batch_normalization=False,
+                       **kwargs):
+        super().__init__(**kwargs)
+
+        flm = feature_linear_modulation
+        batch_norm = batch_normalization
+        use_bias = not batch_normalization
+        dense_linear_layer = partial(Dense, activation=None,
+                                            use_bias=use_bias,
+                                            kernel_initializer=kernel_initializer)
+        batch_norm_layer = BatchNormalization
+
+        self.dl_layer = dense_linear_layer(units)
+        self.bn_layer = batch_norm_layer() if batch_norm else None
+        self.activation = activations.get(activation)
+        self.batch_norm = batch_norm
+
+        self.flm_layer = EFLM(units, depth) if flm else None
+        self.flm = flm
+
+    def call(self, inputs, training=False):
+        x = inputs[0]
+        s = inputs[1]
+        x = self.dl_layer(x)
+        if self.batch_norm:
+            x = self.bn_layer(x, training=training)
+        if self.flm:
+            x = self.flm_layer([x,s])
+        if self.activation is not None:
+            return self.activation(x)
+        return x
+
+    def num_layers(self):
+        return 1
 
 
 class HyperDense(Layer):
