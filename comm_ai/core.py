@@ -254,13 +254,11 @@ class Transmitter:
         # NOTE: bits_output format depends on whether training and debug mode
         #       check then tensor_output code above
         if tensor_output:
-            # reformat bits
-            # list(bit_str) = N_sts elements of shape (N, p.nbps)
-            bit_mat_trn = np.concatenate(list(raw_bit_tsr), axis=1)
+            ### we are in training mode ###
+            # note that bits are mapped naturally across symbols
+            bit_mat_trn = raw_bit_mat.reshape(-1, p.N_sts * p.nbps)
             # bit_mat_trn.shape = (N, N_sts * nbps)
-            #bit_tsr_trn = bit_mat_trn.reshape(N_raw, p.N_sts, p.nbps)
-            bit_tsr_trn = bit_mat_trn
-            bits_output = bit_tsr_trn
+            bits_output = bit_mat_trn
         else:
             bits_output = raw_bits_list
 
