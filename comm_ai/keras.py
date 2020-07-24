@@ -660,6 +660,48 @@ class HyperDense(Layer):
         return 1
 
 
+class HyperDenseV2(Layer):
+    '''
+    Implements preactivated dense layer (for Resnet V2)
+    Implements batch normalized dense layer (Ioffe and Szegedy, 2015)
+    Enable via the batch_normalization option
+
+    NOTE: The subclassed layer's name is inferred from the class name.
+    NOTE: The Layer class produce the correct context (i.e. name scope)
+          No special handling required
+    '''
+    def __init__(self, units,
+                       activation=None,
+                       kernel_initializer=None,
+                       batch_normalization=False,
+                       **kwargs):
+        super().__init__(**kwargs)
+
+        batch_norm = batch_normalization
+        use_bias = not batch_normalization
+        dense_linear_layer = partial(Dense, activation=None,
+                                            use_bias=use_bias,
+                                            kernel_initializer=kernel_initializer)
+        batch_norm_layer = BatchNormalization
+
+        self.dl_layer = dense_linear_layer(units)
+        self.bn_layer = batch_norm_layer() if batch_norm else None
+        self.activation = activations.get(activation)
+        self.batch_norm = batch_norm
+
+    def call(self, inputs, training=False):
+        x = inputs
+        if self.batch_norm:
+            x = self.bn_layer(x, training=training)
+        if self.activation is not None:
+            x = self.activation(x)
+        x = self.dl_layer(x)
+        return x
+
+    def num_layers(self):
+        return 1
+
+
 class Residual(Layer):
     '''
     Implements residual layer (Kaiming He et al., 2015)
@@ -720,6 +762,71 @@ class Residual(Layer):
         if batch_norm: x = self.bn_layer_2(x, training=training)
         x = x + self.transform(inputs)
         return self.activation(x)
+
+    def num_layers(self):
+        return 2
+
+
+class ResidualV2(Layer):
+    '''
+    Implements revised residual layer (Kaiming He et al., 2016)
+
+    NOTE: if input and output dimensions are not equal
+          specify unmatched_dimensions=True, the residual
+          layer becomes: f(x) + A*x
+          instead of:    f(x) + x
+    '''
+    def __init__(self, units,
+                       activation=None,
+                       kernel_initializer=None,
+                       batch_normalization=False,
+                       unmatched_dimensions=False):
+        super().__init__()
+
+        assert( activation is not None )
+        assert( kernel_initializer is not None )
+
+        batch_norm = batch_normalization
+        use_bias = not batch_normalization
+        dense_linear_layer = partial(Dense, activation=None,
+                                            use_bias=use_bias,
+                                            kernel_initializer=kernel_initializer)
+        batch_norm_layer = BatchNormalization
+
+        self.dl_layer_1 = dense_linear_layer(units)
+        self.dl_layer_2 = dense_linear_layer(units)
+        self.bn_layer_1 = batch_norm_layer() if batch_norm else None
+        self.bn_layer_2 = batch_norm_layer() if batch_norm else None
+
+        self.activation = activations.get(activation)
+        self.batch_norm = batch_norm
+        self.unmatched_dims = unmatched_dimensions
+        self.initializer = kernel_initializer
+        self.units = units
+
+    def build(self, input_shape):
+        if self.unmatched_dims:
+            assert( input_shape[-1] != self.units )
+            self.w = self.add_weight(name='W', # needed for tf.saved_model.save()
+                                    shape=(input_shape[-1], self.units),
+                                    initializer=self.initializer,
+                                    trainable=True)
+            self.transform = lambda x : tf.matmul( x, self.w )
+        else:
+            assert( input_shape[-1] == self.units )
+            self.transform = lambda x : x
+
+    def call(self, inputs, training=False):
+        batch_norm = self.batch_norm
+        x = inputs
+        if batch_norm: x = self.bn_layer_1(x, training=training)
+        x = self.activation(x)
+        x = self.dl_layer_1(x)
+        if batch_norm: x = self.bn_layer_2(x, training=training)
+        x = self.activation(x)
+        x = self.dl_layer_2(x)
+
+        return inputs + x
 
     def num_layers(self):
         return 2
