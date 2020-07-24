@@ -221,9 +221,11 @@ class Transmitter:
         if enc == None:
             # Use N from function argument if encoder not defined
             # otherwise, use the N_syms parameter
-            N_raw = p.N_syms if N == None else N
-            raw_bit_tsr = rnd.randint(2, size=(p.N_sts, N_raw, p.nbps))
-            raw_bit_mat = raw_bit_tsr.reshape(p.N_sts, -1)
+            N_raw = p.dec.N if N == None else N
+            #raw_bit_tsr = rnd.randint(2, size=(p.N_sts, N_raw, p.nbps))
+            #raw_bit_mat = raw_bit_tsr.reshape(p.N_sts, -1)
+            raw_bit_tsr = rnd.randint(2, size=(p.N_sts * p.nbps, N_raw))
+            raw_bit_mat = raw_bit_tsr.reshape(p.N_sts * p.nbps, -1)
             raw_bits_list = list(raw_bit_mat)
             mapper_bits_list = raw_bits_list
         else:
