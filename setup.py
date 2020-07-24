@@ -43,15 +43,21 @@ extensions = [decoder_r1_2, decoder_r5_8, decoder_r3_4, decoder_r13_16]
 #extensions = [min_sum_decoder, bp_decoder]
 
 setup(name='comm_ai',
-      version='0.2.0',
+      version='0.3.0',
       packages=find_packages(),
       package_data={'': ['*.txt']},
       scripts=['bin/rclone.py'],
       install_requires=["numpy",
                         "Cython",
-                        "redis",
+                        "importlib_resources ; python_version<'3.7'",
+                        "google-api-python-client", # google-drive
+                        "google-api-core",
+                        "httplib2",
+                        "oauth2client",
+                        "jsonpickle",
+                        "redis", # remote queue storage
                         "psutil",
-                        "importlib_resources ; python_version<'3.7'"],
+                        "hotqueue"],
       ext_modules = cythonize(extensions, language_level=3),
       include_dirs=[numpy.get_include()],
       #license='LICENSE.txt',
