@@ -21,6 +21,10 @@ def d2c_knn_mi_estimator(c_vec, y_mat, nc=None, k=3, units=None):
     ASSUMPIONS:
         samples are stacked along 1st dimension
     '''
+    # check if y_mat is 1d (convert to 2d)
+    if y_mat.ndim == 1:
+        y_mat = y_mat[:,None]
+
     duplicates_detected = False
     Nt = c_vec.shape[0]
     d = y_mat.shape[1]
