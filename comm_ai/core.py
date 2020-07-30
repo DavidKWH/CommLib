@@ -163,6 +163,49 @@ class Receiver:
 ################################################################################
 # high level transmitter class
 ################################################################################
+class SymbolTransmitter:
+    '''
+    Symbol level transmitter (for SER)
+    '''
+    def __init__(self, p,
+                 modulator = None,
+                 training = False,
+                 ):
+
+        assert(modulator)
+
+        self.p = p
+        self.mod = modulator
+        self.training = training
+
+    def __call__(self, *args, **kwargs):
+        return self.generate(*args, **kwargs)
+
+    def generate(self, N=None, debug=False):
+        '''
+        generate raw payload bits and symbols
+        '''
+        p = self.p
+        mod = self.mod
+        training = self.training
+        tensor_output = training or debug
+
+        # generate output symbols
+        N_raw = p.N if N == None else N
+        raw_bit_tsr = rnd.randint(2, size=(N_raw, p.N_sts * p.nbps))
+        raw_bit_mats = np.split(raw_bit_tsr, p.N_sts, axis=1)
+        raw_bit_list = [ bit_mat.reshape(-1) for bit_mat in raw_bit_mats ]
+
+        syms_list = [ mod.map(bits) for bits in raw_bit_list ]
+        syms_mat = np.array(syms_list)
+        # transpose array
+        syms_mat_tr = np.transpose(syms_mat)
+        syms_tsr = syms_mat_tr[:,:, None]
+
+        # return symbols, raw bits
+        return syms_tsr, raw_bit_tsr
+
+
 class Transmitter:
     '''
     Encapsulate all TX functions
@@ -286,6 +329,7 @@ class Channel:
         self.ch_gen = partial(self.channels[get_key(pm.ch_type)], self)
         self.n_gen = partial(self.noise_table[get_key(pm.noise_type)], self)
         self.batch_fixed = has_key(pm.ch_type, 'batch_fixed')
+        self.ch_file = pm.ch_file if pm.ch_type == 'fixed' else None
 
     def __call__(self, syms):
         return self.apply(syms)
@@ -339,9 +383,24 @@ class Channel:
             # repeat H N-times
             H = scale * crandn(N_rx, N_tx)
             H_tsr = np.tile(H, (N,1,1))
+            # save to file
+            #print('saving channel instance to file')
+            #with open('channel.npy', 'wb') as f:
+            #    np.save(f, H);
         else:
             H_tsr = scale * crandn(N, N_rx, N_tx)
 
+        return H_tsr
+
+    def gen_fixed_ch(self, N, N_tx, N_rx):
+        '''
+        load fixed channel from file
+        Channel is already scaled
+        '''
+        ch_file = self.ch_file
+        with open(ch_file, 'rb') as f:
+            H = np.load(f);
+        H_tsr = np.tile(H, (N,1,1))
         return H_tsr
 
     def gen_identity_ch(self, N, N_tx, N_rx):
@@ -357,6 +416,7 @@ class Channel:
         'sv_dist'  : gen_ch_from_sv_dist,
         'identity' : gen_identity_ch,
         'rayleigh' : gen_rayleigh_ch,
+        'fixed'    : gen_fixed_ch,
     }
 
     '''
@@ -449,6 +509,109 @@ class Channel:
 ################################################################################
 # demodulator classes
 ################################################################################
+class SymbolDetector:
+    '''
+    Compute the bit pattern corresponding to the
+    ML symbol.  (for hard detection)
+    '''
+    def __init__(self, p,
+                 modulator = None,
+                 maxlog_approx = False
+                 ):
+        self.p = p
+        self.maxlog_approx = maxlog_approx
+        if modulator:
+            self.mod = modulator
+        else:
+            # assume QAM used
+            self.mod = QAMModulator(p.M)
+
+        ################################
+        # precompute symbol tables
+        ################################
+        # generate bv/symbol tables
+        sym_mat, bit_mat = self.build_source_tables()
+        # save sym and bit vector table
+        self.sym_mat = sym_mat
+        self.bit_mat = bit_mat
+
+    # multi-stream bv/symbol tables
+    #################################
+    def vpermute(self, a,b):
+        '''
+        permute matrices a,b
+        assume a,b with same dtype
+        '''
+        assert(a.dtype == b.dtype)
+        p = self.p
+        Na = a.shape[0]
+        Nb = b.shape[0]
+        ones_a = np.ones((Na,1))
+        ones_b = np.ones((Nb,1))
+        mat_1 = np.kron(a, ones_b).astype(a.dtype)
+        mat_2 = np.kron(ones_a, b).astype(a.dtype)
+        # merge column wise (axis=1)
+        mat_all = np.c_[mat_1, mat_2]
+        return mat_all
+
+    def build_source_tables(self):
+        '''
+        construct multi-stream tables recursively
+        '''
+        p = self.p
+        mod = self.mod
+        sym_vec, bit_mat = mod.get_const()
+        if p.N_sts == 1:
+            return sym_vec, bit_mat
+        else: # N_sts > 1
+            sym_a, sym_b = sym_vec, sym_vec
+            bit_a, bit_b = bit_mat, bit_mat
+            for i in range(p.N_sts - 1):
+                sym_a = self.vpermute(sym_a, sym_b)
+                bit_a = self.vpermute(bit_a, bit_b)
+            return sym_a, bit_a
+
+    def __call__(self, *args, **kwargs):
+        return self.compute_ml(*args, **kwargs)
+
+    def compute_ml(self, y_tsr, h_tsr, n_var_tsr, scaling=True):
+        '''
+        compute ML solution from compatible Y,H
+        NOTE: assume noise variance given in params
+        NOTE: noise variance is needed to compute exact LLRs.
+              In the case of MI-estimation and min-sum decoding,
+              the LLRs can be left unscaled without degrading
+              performance.
+        '''
+        p = self.p
+        N = y_tsr.shape[0]
+        syms = self.sym_mat
+        bits = self.bit_mat
+
+        ## compute squared distance
+        #############################
+
+        # define l2_norm()
+        l2_norm = partial(np.linalg.norm, ord=2, axis=2)
+
+        # implement quad_mat_x using tensor broadcasting
+        h_tsr_ex  = h_tsr[:,np.newaxis,:,:]
+        syms_ex = syms[np.newaxis,:,:,np.newaxis]
+        y = y_tsr[:,np.newaxis,:,:]
+
+        hs = h_tsr_ex @ syms_ex
+        quad_mat = l2_norm(y - hs)**2
+        quad_mat = np.squeeze(quad_mat, axis=2)
+        min_idx = np.argmin(quad_mat, axis=1)
+
+        # return the ML solutions
+        syms_ml = syms[min_idx,:]
+        bits_ml = bits[min_idx,:]
+
+        # return ML solutions
+        return bits_ml, syms_ml
+
+
 class Demodulator:
     '''
     Computes exact LLRs given transmit alphabets,

@@ -98,3 +98,36 @@ class BitErrorRate:
 
         total = cnt * K
         return errs / total
+
+class SymbolErrorRate:
+    '''
+    Implement the SER metric
+    '''
+    def __init__(self, shape):
+        # shape = [N_syms, nbpsv]
+        self.errs = 0
+        self.cnt = 0
+        self.shape = shape
+        self.N = shape[0]
+
+    def __call__(self, *args, **kwargs):
+        self.update_state(*args, **kwargs)
+
+    def update_state(self, true, pred):
+        assert np.array_equal(pred.shape, self.shape)
+        bit_errs = np.sum(true != pred, axis=1)
+        sym_errs = sum(bit_errs > 0)
+        self.cnt += 1
+        self.errs += sym_errs
+
+    def reset_states(self):
+        self.errs = 0
+        self.cnt = 0
+
+    def result(self):
+        cnt = self.cnt
+        errs = self.errs
+        N = self.N
+
+        total = cnt * N
+        return errs / total
