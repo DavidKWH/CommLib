@@ -152,6 +152,154 @@ class BussgangEstimator:
 
         return x_hat_tsr, covar_tsr
 
+class OneBitMLDetector:
+    '''
+    Find ML solution for 1-bit receiver given
+    trasmit alphabets, receive signal and channel
+    knowledge
+
+    Method:
+        The complex model will be converted to the real
+        equivalent channel model.  ML is performed over
+        the real model.
+
+    Based on Demodulator class
+    '''
+
+    def __init__(self, p,
+                 modulator = None,
+                 maxlog_approx = False
+                 ):
+        self.p = p
+        self.maxlog_approx = maxlog_approx
+        if modulator:
+            self.mod = modulator
+        else:
+            # assume QAM used
+            self.mod = QAMModulator(p.M)
+
+        ################################
+        # precompute symbol tables
+        ################################
+        # generate bv/symbol tables
+        sym_mat, bit_mat = self.build_source_tables()
+        # save sym and bit vector table
+        self.sym_mat = sym_mat
+        self.bit_mat = bit_mat
+
+    # multi-stream bv/symbol tables
+    #################################
+    def vpermute(self, a,b):
+        '''
+        permute matrices a,b
+        assume a,b with same dtype
+        '''
+        assert(a.dtype == b.dtype)
+        p = self.p
+        Na = a.shape[0]
+        Nb = b.shape[0]
+        ones_a = np.ones((Na,1))
+        ones_b = np.ones((Nb,1))
+        mat_1 = np.kron(a, ones_b).astype(a.dtype)
+        mat_2 = np.kron(ones_a, b).astype(a.dtype)
+        # merge column wise (axis=1)
+        mat_all = np.c_[mat_1, mat_2]
+        return mat_all
+
+    def build_source_tables(self):
+        '''
+        construct multi-stream tables recursively
+
+        NOTE: symbol must first be converted to real vectors
+        '''
+        p = self.p
+        mod = self.mod
+        sym_vec, bit_mat = mod.get_const()
+
+        def to_real(sym_vec):
+            ''' concatenate along the 2nd dimension '''
+            return np.concatenate([sym_vec.real, sym_vec.imag], axis=1)
+
+        if p.N_sts == 1:
+            return to_real(sym_vec), bit_mat
+        else: # N_sts > 1
+            sym_a, sym_b = sym_vec, sym_vec
+            bit_a, bit_b = bit_mat, bit_mat
+            for i in range(p.N_sts - 1):
+                sym_a = self.vpermute(sym_a, sym_b)
+                bit_a = self.vpermute(bit_a, bit_b)
+            return to_real(sym_a), bit_a
+
+    def __call__(self, *args, **kwargs):
+        return self.compute_ml(*args, **kwargs)
+
+    def compute_ml(self, y_tsr, h_tsr, n_var_tsr, scaling=True):
+        '''
+        Interface function to the internal compute_llrs_real().
+        convert to real equivalent system
+        '''
+        def y_to_real(y_vec):
+            return np.concatenate([y_vec.real, y_vec.imag], axis=0)
+
+        def h_to_real(h_mat):
+            h_real_t = np.hstack([h_mat.real, -h_mat.imag])
+            h_real_b = np.hstack([h_mat.imag,  h_mat.real])
+            h_real = np.vstack([h_real_t, h_real_b])
+            return h_real
+
+        #n_var_real_tsr = n_var_tsr / 2.
+        n_var_real_tsr = None
+        y_real_list = [ y_to_real(y_vec) for y_vec in y_tsr ]
+        y_real_tsr = np.array(y_real_list)
+        h_real_list = [ h_to_real(h_mat) for h_mat in h_tsr ]
+        h_real_tsr = np.array(h_real_list)
+
+        # call internal ml function
+        return self.compute_ml_real(y_real_tsr, h_real_tsr, n_var_real_tsr)
+
+    def compute_ml_real(self, y_tsr, h_tsr, n_var_tsr, scaling=True):
+        '''
+        Inputs from real system at this point...
+
+        compute ML solution from compatible Y,H
+        NOTE: assume noise variance given in params
+        NOTE: noise variance is needed to compute exact LLRs.
+              In the case of MI-estimation and min-sum decoding,
+              the LLRs can be left unscaled without degrading
+              performance.
+
+        Dimensions:
+            syms_x.shape = (N x M_tx)
+            h_tsr.shape  = (N x M_rx x M_tx)
+
+        '''
+        p = self.p
+        N = y_tsr.shape[0]
+        syms = self.sym_mat
+        bits = self.bit_mat
+
+        # pre-compute scaling
+        scale = 1./np.sqrt(p.n_var/2.)
+
+        # implement using tensor broadcasting
+        h_tsr_ex  = h_tsr[:,np.newaxis,:,:]
+        syms_ex = syms[np.newaxis,:,:,np.newaxis]
+        y  = y_tsr[:,np.newaxis,:,:]
+
+        hs = h_tsr_ex @ syms_ex
+        yhs = scale * y * hs
+        phi = norm.cdf(yhs)
+        phi = np.squeeze(phi, axis=3)
+        lhood = np.prod(phi, axis=2)
+        ml_idx = np.argmax(lhood, axis=1)
+
+        # extract ML solutions
+        syms_ml = syms[ml_idx,:]
+        bits_ml = bits[ml_idx,:]
+
+        # return ML solutions
+        return bits_ml, syms_ml
+
 
 class OneBitMLDemod:
     '''
