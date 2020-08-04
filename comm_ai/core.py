@@ -331,6 +331,12 @@ class Channel:
         self.batch_fixed = has_key(pm.ch_type, 'batch_fixed')
         self.ch_file = pm.ch_file if pm.ch_type == 'fixed' else None
 
+        if pm.ch_type == 'fixed':
+            print(f'getting channel from file: {self.ch_file}')
+            with open(self.ch_file, 'rb') as f:
+                H = np.load(f);
+            self.H_fixed = H
+
     def __call__(self, syms):
         return self.apply(syms)
 
@@ -398,9 +404,8 @@ class Channel:
         Channel is already scaled
         '''
         ch_file = self.ch_file
-        with open(ch_file, 'rb') as f:
-            H = np.load(f);
-        H_tsr = np.tile(H, (N,1,1))
+        H_fixed = self.H_fixed
+        H_tsr = np.tile(H_fixed, (N,1,1))
         return H_tsr
 
     def gen_identity_ch(self, N, N_tx, N_rx):
