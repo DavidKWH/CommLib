@@ -12,7 +12,11 @@ from .core import QAMModulator
 from .core import Demodulator
 from .core import Channel
 from .core import Transmitter
+from .core import SymbolTransmitter
 from .core import bv2dec
+from .core import dec2bv
+
+from .one_bit import OneBitMLDemod
 
 from tensorflow.keras.optimizers import SGD
 from tensorflow.keras.optimizers import Adam
@@ -147,6 +151,7 @@ def quantize_o(x_cpx):
 ################################################################################
 # Comm dataset V2
 ################################################################################
+
 class CommDataSet:
     '''
     Iterable Wrapper for Tensorflow model training (V2)
@@ -159,7 +164,8 @@ class CommDataSet:
                           mode='none',
                           test=False,
                           transform=None,
-                          one_bit=False):
+                          one_bit=False,
+                          symbol_only=False):
         assert( hasattr(p,mode) )
         self.p = p
         self.n_iter = p.n_test_steps if test else p.n_train_steps
@@ -170,14 +176,27 @@ class CommDataSet:
         self.mode = mode
         # comm. components
         self.mod = QAMModulator(p.M)
-        self.demod = Demodulator(p, modulator=self.mod,
-                                    maxlog_approx=maxlog_approx)
+
+        if one_bit:
+            self.demod = OneBitMLDemod(p, modulator=self.mod,
+                                          maxlog_approx=maxlog_approx)
+        else:
+            self.demod = Demodulator(p, modulator=self.mod,
+                                        maxlog_approx=maxlog_approx)
+
         self.channel = Channel(p, mode)
-        self.transmit = Transmitter(p, modulator=self.mod, training=True)
+
+        if symbol_only:
+            self.transmit = SymbolTransmitter(p, modulator=self.mod, training=True)
+        else:
+            self.transmit = Transmitter(p, modulator=self.mod, training=True)
+
         self.in_transform = transform
         self.one_bit = one_bit
+        self.symbol_only = symbol_only
 
         print("CommDataSet one_bit mode =", self.one_bit)
+        print("CommDataSet symbol only =", self.symbol_only)
 
     def __repr__(self):
         return "Communication dataset iterable"
@@ -208,7 +227,7 @@ class CommDataSet:
         '''
         p = self.p
         test = self.test
-        llr_output = self.llr_output or self.test
+        llr_output = self.llr_output
         sym_output = self.sym_output
         mod = self.mod
         transmit = self.transmit
@@ -224,8 +243,9 @@ class CommDataSet:
         syms_tsr, bit_tsr = transmit(N)
         # apply channel and noise
         y_tsr, h_tsr, n_var_tsr = channel(syms_tsr)
-        # SNR is multiplexed on the same channel output...
-        snr_tsr = n_var_tsr
+        # output differs depending on noise_type
+        if p.train.noise_type == 'rand_snr':
+            snr_tsr = n_var_tsr
         # one bit quantization
         if self.one_bit:
             y_tsr = quantize_o(y_tsr)
@@ -237,7 +257,8 @@ class CommDataSet:
         y_mat = y_tsr.reshape(N,-1)
         bit_mat = bit_tsr.reshape(N,-1)
         n_var_mat = n_var_tsr.reshape(N,-1)
-        snr_mat = snr_tsr.reshape(N,-1)
+        if p.train.noise_type == 'rand_snr':
+            snr_mat = snr_tsr.reshape(N,-1)
 
         # symbol output?
         sym_vec = bv2dec(bit_mat) if sym_output else None
@@ -249,7 +270,8 @@ class CommDataSet:
         h_mat = tf.convert_to_tensor(h_mat, dtype=tf.float32)
         y_mat = tf.convert_to_tensor(y_mat, dtype=tf.float32)
         n_var_mat = tf.convert_to_tensor(n_var_mat, dtype=tf.float32)
-        snr_mat = tf.convert_to_tensor(snr_mat, dtype=tf.int32)
+        if p.train.noise_type == 'rand_snr':
+            snr_mat = tf.convert_to_tensor(snr_mat, dtype=tf.int32)
         bit_mat = tf.convert_to_tensor(bit_mat, dtype=tf.bool)
         # conditional outputs
         lambda_mat = tf.convert_to_tensor(lambda_mat, dtype=tf.float32) if llr_output else None
@@ -257,7 +279,7 @@ class CommDataSet:
 
         # output processing
         in_seq = [y_mat, h_mat, n_var_mat]
-        if p.train.noise_type in ('rand_snr', 'fixed_snr'):
+        if p.train.noise_type == 'rand_snr':
             in_seq = [y_mat, h_mat, snr_mat]
         if in_transform: in_seq = in_transform(in_seq)
         out_seq = [bit_mat, sym_vec]
@@ -280,14 +302,57 @@ class DnnDemod:
     '''
     Encapsulate trained Tensorflow model
     Implements Demodulator interface
-
-    NOTE: Use default mode for evaluating DNN model
     '''
 
     def __init__(self, p):
         self.p = p
         fname = '/'.join((p.m_dir, p.m_file))
         print('loading model from file:', fname)
+        self.model = tf.saved_model.load(fname)
+
+    def __call__(self, *args, **kwargs):
+        return self.compute_llrs(*args, **kwargs)
+
+    def compute_llrs(self, y_tsr, h_tsr, n_var_tsr, scaling=True):
+        model = self.model
+        N = y_tsr.shape[0]
+
+        # FIXME:specify dtype
+        #dtype = tf.float64
+        dtype = tf.float32
+
+        # flatten dimensions i>1
+        h_mat = h_tsr.reshape(N,-1)
+        y_mat = y_tsr.reshape(N,-1)
+        n_var_mat = n_var_tsr.reshape(N,-1)
+        # convert to reals
+        h_mat = cplx2reals(h_mat)
+        y_mat = cplx2reals(y_mat)
+        # convert to tensors
+        h_mat = tf.convert_to_tensor(h_mat, dtype=dtype)
+        y_mat = tf.convert_to_tensor(y_mat, dtype=dtype)
+        #n_var_mat = tf.convert_to_tensor(n_var_mat, dtype=dtype)
+
+        # convert n_var to integer
+        n_var_mat = tf.convert_to_tensor(n_var_mat, dtype=tf.int32)
+
+        # input processing
+        in_seq = [y_mat, h_mat, n_var_mat]
+        logits = model(in_seq)
+        llrs = - logits.numpy().astype(float)
+        return llrs
+
+
+class DnnDetector:
+    '''
+    Encapsulate trained Tensorflow model
+    Implements Detector interface
+    '''
+
+    def __init__(self, p):
+        self.p = p
+        fname = '/'.join((p.m_dir, p.m_file))
+        print('DnnDetector: loading model from file:', fname)
         self.model = tf.saved_model.load(fname)
 
     def __call__(self, *args, **kwargs):
@@ -306,7 +371,6 @@ class DnnDemod:
         h_mat = h_tsr.reshape(N,-1)
         y_mat = y_tsr.reshape(N,-1)
         n_var_mat = n_var_tsr.reshape(N,-1)
-        snr_mat = n_var_mat
         # convert to reals
         h_mat = cplx2reals(h_mat)
         y_mat = cplx2reals(y_mat)
@@ -314,13 +378,18 @@ class DnnDemod:
         h_mat = tf.convert_to_tensor(h_mat, dtype=dtype)
         y_mat = tf.convert_to_tensor(y_mat, dtype=dtype)
         n_var_mat = tf.convert_to_tensor(n_var_mat, dtype=dtype)
-        snr_mat = tf.convert_to_tensor(snr_mat, dtype=tf.int32)
+
+        # convert n_var to integer
+        #n_var_mat = tf.convert_to_tensor(n_var_mat, dtype=tf.int32)
+
         # input processing
         in_seq = [y_mat, h_mat, n_var_mat]
-        if p.default.noise_type in ('rand_snr', 'fixed_snr'):
-            in_seq = [y_mat, h_mat, snr_mat]
         logits = model(in_seq)
-        llrs = - logits.numpy().astype(float)
-        return llrs
+        # output processing
+        #one_hot_pred = (logits == logits.max(axis=1))
+        pred_idx = tf.argmax(logits, axis=1).numpy()
+        bits_mat = dec2bv(pred_idx, p.nbpsv)
+        syms_mat = None
 
+        return bits_mat, syms_mat
 
