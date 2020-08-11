@@ -74,6 +74,15 @@ def plot_model(p, model, name=None, show=False):
         plt.axis("image")
         plt.show()
 
+    pname = get_model_prefix(p, 'model_summary')
+    fname = pname + '.txt'
+    print('saving model summary to file:', fname)
+
+    from contextlib import redirect_stdout
+    with open(fname, 'w') as f:
+        with redirect_stdout(f):
+            model.summary()
+
 def save_model(p, model, save_to_remote=False):
     ''' save model to file '''
 
