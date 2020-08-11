@@ -11,6 +11,7 @@ import numpy.random as rnd
 from numpy.random import randn
 # helper functions
 from functools import partial
+from itertools import product
 # package local
 from .params import get_key
 from .params import has_key
@@ -332,13 +333,54 @@ class Channel:
         self.ch_file = pm.ch_file if pm.ch_type == 'fixed' else None
 
         if pm.ch_type == 'fixed':
-            print(f'getting channel from file: {self.ch_file}')
+            print(f'Channel: getting channel from file: {self.ch_file}')
             with open(self.ch_file, 'rb') as f:
                 H = np.load(f);
             self.H_fixed = H
 
+        if pm.ch_type == 'covar':
+            self.gen_chan_covar_mat()
+
     def __call__(self, syms):
         return self.apply(syms)
+
+    def gen_chan_covar_mat(self):
+        ''' generate covariance matrices for users '''
+        import numpy.linalg as LA
+        p = self.p
+        Nr = p.N_rx
+        K = p.N_tx
+
+        d = p.chan_cov.d
+        phi_vec_rad = p.chan_cov.phi_vec_rad
+        sig_phi_rad = p.chan_cov.sig_phi_rad
+
+        assert(len(phi_vec_rad) == K)
+
+        ch_gens = []
+        for k,phi in enumerate(phi_vec_rad):
+            cov_u = [ ( np.exp(2*np.pi*1j*d*(m-n)*np.sin(phi))
+                    * np.exp(-sig_phi_rad**2/2*(2*np.pi*d*(m-n)*np.cos(phi))**2) )
+                            for (m,n) in product(range(Nr), repeat=2) ]
+
+            ch_cov = np.array(cov_u).reshape(Nr,Nr)
+
+            v, U = LA.eigh(ch_cov)
+            v[v < 0] = 0 # chan covariance is pos-semi definite
+            D_sqrt = np.diag(np.sqrt(v))
+            # compute U * D_sqrt * U^H
+            gen = U @ D_sqrt @ U.conj().T
+            ch_gens.append(gen)
+
+#            import matplotlib.pyplot as plt
+#            plt.imshow(np.abs(ch_cov))
+#            plt.colorbar()
+#            plt.xticks(np.arange(0,Nr,2))
+#            plt.show()
+
+        # save generators
+        self.ch_gens = np.array(ch_gens)
+
 
     '''
     channel generation functions
@@ -376,6 +418,27 @@ class Channel:
 
         return H
 
+    def gen_ch_from_covar(self, N, N_tx, N_rx):
+        # ch_gens.shape = (N_tx, N_rx, N_rx)
+        ch_gens = self.ch_gens
+
+        # generate unit normal random vectors
+        scale = 1 / np.sqrt(N_tx)
+        e = scale * crandn(N,N_tx,N_rx,1)
+
+        # block matrix vector multiplication
+        h = ch_gens[None,:,:,:]
+        h_u_tsr = h @ e
+
+        # split into list of users channels
+        # and re-combined along the last dimension
+        h_u_list = np.split(h_u_tsr, N_tx, axis=1)
+        h_u_list = [np.squeeze(h_u) for h_u in h_u_list]
+        h_tsr = np.stack(h_u_list, axis=2)
+
+        return h_tsr
+
+
     def gen_rayleigh_ch(self, N, N_tx, N_rx):
         '''
         scale channel such that the noiseless
@@ -384,17 +447,18 @@ class Channel:
         Add batch_fixed mode for DNN training
         '''
         scale = 1 / np.sqrt(N_tx)
+        H_tsr = scale * crandn(N, N_rx, N_tx)
 
-        if self.batch_fixed:
-            # repeat H N-times
-            H = scale * crandn(N_rx, N_tx)
-            H_tsr = np.tile(H, (N,1,1))
-            # save to file
-            #print('saving channel instance to file')
-            #with open('channel.npy', 'wb') as f:
-            #    np.save(f, H);
-        else:
-            H_tsr = scale * crandn(N, N_rx, N_tx)
+#        if self.batch_fixed:
+#            # repeat H N-times
+#            H = scale * crandn(N_rx, N_tx)
+#            H_tsr = np.tile(H, (N,1,1))
+#            # save to file
+#            #print('saving channel instance to file')
+#            #with open('channel.npy', 'wb') as f:
+#            #    np.save(f, H);
+#        else:
+#            H_tsr = scale * crandn(N, N_rx, N_tx)
 
         return H_tsr
 
@@ -422,6 +486,7 @@ class Channel:
         'identity' : gen_identity_ch,
         'rayleigh' : gen_rayleigh_ch,
         'fixed'    : gen_fixed_ch,
+        'covar'    : gen_ch_from_covar,
     }
 
     '''
