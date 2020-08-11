@@ -63,6 +63,7 @@ def plot_model(p, model, name=None, show=False):
 
     print('saving model graph to file:', fname)
     tf.keras.utils.plot_model(model, fname, show_shapes=True)
+
     if show:
         print('close plot to continue...')
         img = mpimg.imread(fname)
@@ -82,6 +83,9 @@ def plot_model(p, model, name=None, show=False):
     with open(fname, 'w') as f:
         with redirect_stdout(f):
             model.summary()
+
+    if show:
+        model.summary()
 
 def save_model(p, model, save_to_remote=False):
     ''' save model to file '''
