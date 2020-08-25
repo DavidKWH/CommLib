@@ -164,7 +164,6 @@ def quantize_o(x_cpx):
 ################################################################################
 # Comm dataset V2
 ################################################################################
-
 class CommDataSet:
     '''
     Iterable Wrapper for Tensorflow model training (V2)
@@ -178,7 +177,8 @@ class CommDataSet:
                           test=False,
                           transform=None,
                           one_bit=False,
-                          symbol_only=False):
+                          symbol_only=False,
+                          meta_learn=False):
         assert( hasattr(p,mode) )
         self.p = p
         self.n_iter = p.n_test_steps if test else p.n_train_steps
@@ -207,9 +207,11 @@ class CommDataSet:
         self.in_transform = transform
         self.one_bit = one_bit
         self.symbol_only = symbol_only
+        self.meta_learn = meta_learn
 
-        print("CommDataSet one_bit mode =", self.one_bit)
-        print("CommDataSet symbol only =", self.symbol_only)
+        print("CommDataSet: one_bit mode =", self.one_bit)
+        print("CommDataSet: symbol only =", self.symbol_only)
+        print("CommDataSet: meta learn =", self.meta_learn)
 
     def __repr__(self):
         return "Communication dataset iterable"
@@ -225,6 +227,13 @@ class CommDataSet:
             raise StopIteration()
         self.cnt += 1
         return self.get_training_data()
+
+    # returns a generator (for tf.data.Dataset.from_generator())
+    def get_generator(self):
+        def ds_gen():
+            while True:
+                yield self.get_training_data()
+        return ds_gen
 
     def get_training_data(self):
         '''
@@ -251,6 +260,10 @@ class CommDataSet:
         sym_vec = None
         lambda_mat = None
         N = p.batch_size
+
+        if self.meta_learn:
+            # assume train and test the same
+            N = p.mlearn.batch_size * 2
 
         # generate payload bits and symbols
         syms_tsr, bit_tsr = transmit(N)
@@ -289,6 +302,9 @@ class CommDataSet:
         # conditional outputs
         lambda_mat = tf.convert_to_tensor(lambda_mat, dtype=tf.float32) if llr_output else None
         sym_vec = tf.convert_to_tensor(sym_vec, dtype=tf.int32) if sym_output else None
+
+        if self.meta_learn:
+            return y_mat, h_mat, n_var_mat, bit_mat, sym_vec
 
         # output processing
         in_seq = [y_mat, h_mat, n_var_mat]
