@@ -5,6 +5,7 @@ import numpy.linalg as la
 from functools import partial
 
 from .core import QAMModulator
+from .core import PerSymbolDetector
 from scipy.stats import norm
 
 # define diag_matrix operation
@@ -23,6 +24,166 @@ def diag_mat_v(A_tsr, exp=1.):
     # assign to the diagonal of submatrices a vector of values
     np.einsum('...ii->...i', diag_tsr)[:,:] = diag_mat
     return diag_tsr
+
+class BussgangDetector:
+    '''
+    Bussgang symbol detector for 1-bit channels, with
+    Q(r) a component-wise sign operator
+        r = Hx + z, y = Q(r)
+
+    Based on BussgangEstimator
+    '''
+    def __init__(self, p, modulator=None, mode='bmmse', rescale=False):
+        self.p = p
+        self.mode = mode
+        self.est = partial(self.estimators[mode], self)
+        self.det = PerSymbolDetector(p, modulator)
+        self.rescale = rescale
+        print(f'Bussgang detector mode = {mode}')
+
+#    def covar(self, w_mat, S_r):
+#        ''' noise variance S_r '''
+#        A = np.matrix(w_mat)
+#        Sigma = A @ S_r @ A.H
+#        return Sigma
+
+    def bzf_est(self, y_tsr, A_tsr, S_n_tsr):
+
+        A_pinv_tsr = la.pinv(A_tsr)
+        W_tsr = A_pinv_tsr
+        x_hat_tsr = W_tsr @ y_tsr
+
+        return x_hat_tsr, W_tsr
+
+    def bmmse_est(self, y_tsr, A_tsr, S_n_tsr):
+
+        #def bmmse_weight(A, S_n):
+        #    ''' NOTE: A is a tall matrix '''
+        #    A = np.matrix(A)
+        #    return A.H @ la.inv(A @ A.H + S_n)
+
+        #W_tsr = [ bmmse_weight(A, S_n) for (A, S_n) in zip(A_tsr, S_n_tsr) ]
+
+        # vectorized version of
+        # A.H @ la.inv(A @ A.H + S_n)
+        A = A_tsr
+        S_n = S_n_tsr
+        A_herm = np.conj(A).swapaxes(1,2)
+        W_tsr = A_herm @ la.inv(A @ A_herm + S_n)
+
+        x_hat_tsr = W_tsr @ y_tsr
+
+        return x_hat_tsr, W_tsr
+
+    # estimators
+    estimators = {
+        'bmmse' : bmmse_est,
+        'bzf'   : bzf_est,
+    }
+
+    def __call__(self, *args, **kwargs):
+        return self.detect(*args, **kwargs)
+
+    def detect(self, y_tsr, h_tsr, n_var_tsr):
+        '''
+        Dimensions:
+            y_tsr.shape     = (N, N_rx, 1)
+            h_tsr.shape     = (N, N_rx, N_tx)
+            n_var_tsr.shape = (N, 1, 1)
+
+        TODO: consider vectorizing computation for speed
+        NOTE: np.vectorize() is syntaxtic sugar (essentially for loops) does not
+              offer speed ups.
+        '''
+
+        # compute equivalent linear channel parameters (S_r, A, S_n)
+#        def compute_S_r(H, n_var):
+#            H = np.matrix(H)
+#            N_rx = H.shape[0]
+#            I = n_var * np.identity(N_rx)
+#            S_r = H @ H.H + I
+#            return S_r
+#
+#        def compute_A(S_r, H):
+#            ''' A = FH '''
+#            scale = np.sqrt(2./np.pi)
+#            F = scale * diag_mat( S_r, exp=-0.5 )
+#            A = F @ H
+#            return A
+#
+#        def compute_S_n(S_r, n_var):
+#            # compute S_n
+#            diag_mat_S_h = diag_mat( S_r, exp=-0.5 )
+#            diag_mat_S_w = diag_mat( S_r, exp=-1.0 )
+#            T_2 = diag_mat_S_h @ S_r @ diag_mat_S_h
+#            np.clip(T_2.real, -1., 1., out=T_2.real)
+#            np.clip(T_2.imag, -1., 1., out=T_2.imag)
+#            T_1 = np.arcsin(T_2.real) + 1j*np.arcsin(T_2.imag)
+#            S_n = 2./np.pi * (T_1 - T_2 + n_var * diag_mat_S_w)
+#            return S_n
+
+        #S_r_tsr = [ compute_S_r(h_mat, n_var) for (h_mat, n_var) in zip(h_tsr, n_var_tsr) ]
+        #A_tsr = [ compute_A(S_r, h_mat) for (S_r, h_mat) in zip(S_r_tsr, h_tsr) ]
+        #S_n_tsr = [ compute_S_n(S_r, n_var) for (S_r, n_var) in zip(S_r_tsr, n_var_tsr) ]
+
+        N_rx = h_tsr.shape[1]
+        N_tx = h_tsr.shape[2]
+        H = h_tsr
+        I = np.identity(N_rx)
+        I = I[None,...]
+        n_var = n_var_tsr
+
+        # vectorized version of
+        # H @ H.H + n_var * I
+        H_herm = np.conj(H).swapaxes(1,2)
+        S_r_tsr = H @ H_herm + n_var * I
+
+        # vectorized version of compute_A()
+        scale = np.sqrt(2./np.pi)
+        diag_tsr_S_h = diag_mat_v( S_r_tsr, exp=-0.5 )
+        F = scale * diag_tsr_S_h
+        A_tsr = F @ H
+
+        # vectorized version of compute_S_n()
+        diag_tsr_S_w = diag_mat_v( S_r_tsr, exp=-1.0 )
+        T_2 = diag_tsr_S_h @ S_r_tsr @ diag_tsr_S_h
+        np.clip(T_2.real, -1., 1., out=T_2.real)
+        np.clip(T_2.imag, -1., 1., out=T_2.imag)
+        T_1 = np.arcsin(T_2.real) + 1j*np.arcsin(T_2.imag)
+        S_n_tsr = 2./np.pi * (T_1 - T_2 + n_var * diag_tsr_S_w)
+
+        x_hat_tsr, w_tsr = self.est(y_tsr, A_tsr, S_n_tsr)
+
+        # vectorized version of covar()
+        W = w_tsr
+        W_herm = np.conj(W).swapaxes(1,2)
+        covar_tsr = W @ S_n_tsr @ W_herm
+
+#        # equalize per symbol x_hat
+#        WH = w_tsr @ h_tsr
+#        WH_diag = np.diagonal(WH, axis1=1, axis2=2)
+#        # TODO: WH_diag using explicit einsum (enable broadcasting)
+#        #WH_diag = np.einsum('...ij,...ji->...i', w_tsr, h_tsr)
+#        # implements element-wise x_hat_tsr / WH_diag
+#        x_hat_eq = np.reciprocal(WH_diag)[...,None] * x_hat_tsr
+#        # assign to x_hat_tsr
+#        x_hat_tsr = x_hat_eq
+#
+#        # (optional) rescale
+#        #if self.rescale:
+#        if True:
+#            K_sqrt = np.sqrt(N_tx)
+#            x_hat_norms = la.norm(x_hat_eq, axis=1) # l2-norm
+#            x_hat_rescaled = [ x_hat / norm for (x_hat, norm) in zip(x_hat_eq, x_hat_norms) ]
+#            x_hat_rescaled = K_sqrt * np.array(x_hat_rescaled)
+#            # assign to x_hat_tsr
+#            x_hat_tsr = x_hat_rescaled
+
+        # per symbol detection
+        bits_msd, syms_msd = self.det.compute_msd(x_hat_tsr)
+
+        return bits_msd, syms_msd
+
 
 class BussgangEstimator:
     '''

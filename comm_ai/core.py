@@ -329,8 +329,12 @@ class Channel:
         self.pm = pm = getattr(p,mode)
         self.ch_gen = partial(self.channels[get_key(pm.ch_type)], self)
         self.n_gen = partial(self.noise_table[get_key(pm.noise_type)], self)
-        self.batch_fixed = has_key(pm.ch_type, 'batch_fixed')
+        self.ch_batch_fixed = has_key(pm.ch_type, 'batch_fixed')
+        self.n_batch_fixed = has_key(pm.noise_type, 'batch_fixed')
         self.ch_file = pm.ch_file if pm.ch_type == 'fixed' else None
+
+        if mode is not None:
+            print(f'Channel: using {mode} parameters')
 
         if pm.ch_type == 'fixed':
             print(f'Channel: getting channel from file: {self.ch_file}')
@@ -447,18 +451,13 @@ class Channel:
         Add batch_fixed mode for DNN training
         '''
         scale = 1 / np.sqrt(N_tx)
-        H_tsr = scale * crandn(N, N_rx, N_tx)
 
-#        if self.batch_fixed:
-#            # repeat H N-times
-#            H = scale * crandn(N_rx, N_tx)
-#            H_tsr = np.tile(H, (N,1,1))
-#            # save to file
-#            #print('saving channel instance to file')
-#            #with open('channel.npy', 'wb') as f:
-#            #    np.save(f, H);
-#        else:
-#            H_tsr = scale * crandn(N, N_rx, N_tx)
+        if self.ch_batch_fixed:
+            # repeat H N-times
+            H = scale * crandn(N_rx, N_tx)
+            H_tsr = np.tile(H, (N,1,1))
+        else:
+            H_tsr = scale * crandn(N, N_rx, N_tx)
 
         return H_tsr
 
@@ -506,7 +505,12 @@ class Channel:
 
     def gen_rand_var(self, N, N_rx):
         p = self.p
-        snr_tsr_db = rnd.uniform(low=p.log_u_a, high=p.log_u_b, size=(N,1,1))
+        if self.n_batch_fixed:
+            snr_db = rnd.uniform(low=p.log_u_a, high=p.log_u_b)
+            snr_tsr_db = np.tile(snr_db, (N,1,1))
+        else:
+            snr_tsr_db = rnd.uniform(low=p.log_u_a, high=p.log_u_b, size=(N,1,1))
+        # common part
         n_std_tsr = 10**(-snr_tsr_db/20)
         n_var_tsr = n_std_tsr**2
         std_n_tsr = crandn(N, N_rx, 1)
@@ -585,11 +589,9 @@ class SymbolDetector:
     ML symbol.  (for hard detection)
     '''
     def __init__(self, p,
-                 modulator = None,
-                 maxlog_approx = False
+                 modulator = None
                  ):
         self.p = p
-        self.maxlog_approx = maxlog_approx
         if modulator:
             self.mod = modulator
         else:
@@ -901,6 +903,110 @@ class SymbolEstimator:
 ################################################################################
 # demapper classes
 ################################################################################
+class PerSymbolDetector:
+    '''
+    Implements per symbol detector
+
+    x_det = argmin_{x \in X^N} \|x_hat - x\|^2, where X = alphabet
+
+    Note that this is equivalent to symbol-by-symbol detection
+
+    x_k_det = argmin_{x_k \in X} | x_k_hat - x_k |^2, \forall k
+
+    since the objective can be decoupled.
+
+    Based on SymbolDetector
+    '''
+    def __init__(self, p,
+                 modulator = None
+                 ):
+        self.p = p
+        if modulator:
+            self.mod = modulator
+        else:
+            # assume QAM used
+            self.mod = QAMModulator(p.M)
+
+        ################################
+        # precompute symbol tables
+        ################################
+        # generate bv/symbol tables
+        sym_mat, bit_mat = self.build_source_tables()
+        # save sym and bit vector table
+        self.sym_mat = sym_mat
+        self.bit_mat = bit_mat
+
+    # multi-stream bv/symbol tables
+    #################################
+    def vpermute(self, a,b):
+        '''
+        permute matrices a,b
+        assume a,b with same dtype
+        '''
+        assert(a.dtype == b.dtype)
+        p = self.p
+        Na = a.shape[0]
+        Nb = b.shape[0]
+        ones_a = np.ones((Na,1))
+        ones_b = np.ones((Nb,1))
+        mat_1 = np.kron(a, ones_b).astype(a.dtype)
+        mat_2 = np.kron(ones_a, b).astype(a.dtype)
+        # merge column wise (axis=1)
+        mat_all = np.c_[mat_1, mat_2]
+        return mat_all
+
+    def build_source_tables(self):
+        '''
+        construct multi-stream tables recursively
+        '''
+        p = self.p
+        mod = self.mod
+        sym_vec, bit_mat = mod.get_const()
+        if p.N_sts == 1:
+            return sym_vec, bit_mat
+        else: # N_sts > 1
+            sym_a, sym_b = sym_vec, sym_vec
+            bit_a, bit_b = bit_mat, bit_mat
+            for i in range(p.N_sts - 1):
+                sym_a = self.vpermute(sym_a, sym_b)
+                bit_a = self.vpermute(bit_a, bit_b)
+            return sym_a, bit_a
+
+    def __call__(self, *args, **kwargs):
+        return self.compute_ml(*args, **kwargs)
+
+    def compute_msd(self, x_hat_tsr, scaling=True):
+        '''
+        compute closest distance solution
+        x_det = argmax_{x \in X} |x_hat - x|^2, where X = alphabet
+        '''
+        p = self.p
+        N = x_hat_tsr.shape[0]
+        syms = self.sym_mat
+        bits = self.bit_mat
+
+        ## compute squared distance
+        #############################
+
+        # define l2_norm()
+        l2_norm = partial(np.linalg.norm, ord=2, axis=2)
+
+        # implement quad_mat_x using tensor broadcasting
+        syms_ex = syms[np.newaxis,:,:,np.newaxis]
+        x_hat = x_hat_tsr[:,np.newaxis,:,:]
+
+        quad_mat = l2_norm(x_hat - syms_ex)**2
+        quad_mat = np.squeeze(quad_mat, axis=2)
+        min_idx = np.argmin(quad_mat, axis=1)
+
+        # return the ML solutions
+        syms_ml = syms[min_idx,:]
+        bits_ml = bits[min_idx,:]
+
+        # return ML solutions
+        return bits_ml, syms_ml
+
+
 class GaussianDemapper:
     '''
     Implements demapping in the symbol space for
