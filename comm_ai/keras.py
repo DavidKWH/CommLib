@@ -673,6 +673,7 @@ class HyperDenseV2(Layer):
     def __init__(self, units,
                        activation=None,
                        kernel_initializer=None,
+                       kernel_regularizer=None,
                        batch_normalization=False,
                        **kwargs):
         super().__init__(**kwargs)
@@ -681,7 +682,8 @@ class HyperDenseV2(Layer):
         use_bias = not batch_normalization
         dense_linear_layer = partial(Dense, activation=None,
                                             use_bias=use_bias,
-                                            kernel_initializer=kernel_initializer)
+                                            kernel_initializer=kernel_initializer,
+                                            kernel_regularizer=kernel_regularizer)
         batch_norm_layer = BatchNormalization
 
         self.dl_layer = dense_linear_layer(units)
@@ -967,6 +969,60 @@ class HyperNetResidualV2(Layer):
 
     def num_layers(self):
         return 2
+
+
+class DenseBlock(Layer):
+    '''
+    Implements Component of Densenet(Gao Huang, Zhuang Liu et al., 2017)
+
+    Based on Residual
+    '''
+    def __init__(self, n_layers,
+                       growth_rate,
+                       activation=None,
+                       kernel_initializer=None,
+                       kernel_regularizer=None,
+                       batch_normalization=False,
+                       unmatched_dimensions=False):
+        super().__init__()
+
+        assert( activation is not None )
+        assert( kernel_initializer is not None )
+
+        batch_norm = batch_normalization
+        use_bias = not batch_normalization
+        composite_layer = partial(HyperDenseV2, activation=activation,
+                                         batch_normalization=batch_norm,
+                                         kernel_initializer=kernel_initializer,
+                                         kernel_regularizer=kernel_regularizer)
+
+        comp_layers = []
+        for l in range(n_layers):
+            comp_layers.append(composite_layer(growth_rate))
+
+        self.n_layers = n_layers
+        self.growth_rate = growth_rate
+        self.comp_layers = comp_layers
+
+#        self.activation = activations.get(activation)
+#        self.batch_norm = batch_norm
+#        self.initializer = kernel_initializer
+
+    def build(self, input_shape):
+        self.n_inputs = input_shape[-1]
+        self.n_outputs = self.n_inputs + self.growth_rate * self.n_layers
+
+    def call(self, inputs, training=False):
+        x = inputs
+
+        for comp_layer in self.comp_layers:
+            y = comp_layer(x, training=training)
+            x = tf.concat([x, y], -1)
+
+        return x
+
+    def num_layers(self):
+        return self.n_layers
 
 
 class MaxOut(Layer):
