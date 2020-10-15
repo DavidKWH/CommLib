@@ -111,7 +111,9 @@ class RecursiveParams:
                 new_dict.update({key: val.tolist()})
             elif hasattr(val,'__dict__') or hasattr(val,'__slot__'):
                 # instance of non-builtin type
-                raise ValueError('Cannot serialize instance of a non-builtin type')
+                #raise ValueError('Cannot serialize instance of a non-builtin type')
+                # convert to the string '<class_name>()'
+                new_dict.update({key: type(val).__name__+'()'})
             else:
                 # instance of builtin type (numeric or string)
                 new_dict.update({key: val})
