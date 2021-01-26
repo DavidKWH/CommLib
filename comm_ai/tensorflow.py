@@ -7,7 +7,9 @@ import tensorflow as tf
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
 
+from .core import preproc_channel
 from .core import cplx2reals
+from .core import reals2cplx
 from .core import QAMModulator
 from .core import Demodulator
 from .core import Channel
@@ -17,6 +19,7 @@ from .core import bv2dec
 from .core import dec2bv
 
 from .one_bit import OneBitMLDemod
+from .one_bit import BussgangEstimator
 
 from tensorflow.keras.optimizers import SGD
 from tensorflow.keras.optimizers import Adam
@@ -161,6 +164,35 @@ def quantize_o(x_cpx):
     '''perform component wise quantization'''
     return np.sign(x_cpx.real) + 1j* np.sign(x_cpx.imag)
 
+class QuantizerWithDCBias:
+    def __init__(self, p):
+        '''generate random DC bias'''
+        import numpy.random as rnd
+
+        # cplx = 2 real dimensions
+        signs = rnd.binomial(1,p.dc.prob,size=(p.N_rx,2))
+        signs = 2.0*signs - 1.0
+        # save vars
+        self.offsets = p.dc.offset * signs
+
+        if p.dc.load_file is not None:
+            print('loading DC offsets from file: ' + p.dc.load_file)
+            self.offsets = np.load(p.dc.load_file)
+        else:
+            # save to file
+            fname = 'dc_offsets.npy'
+            np.save(fname, self.offsets)
+            print('saving DC offsets to file: ' + fname)
+
+    def __call__(self, x_cpx):
+        offset_real = self.offsets[:,0]
+        offset_real = offset_real[None,:,None]
+        offset_imag = self.offsets[:,1]
+        offset_imag = offset_imag[None,:,None]
+
+        return np.sign(x_cpx.real + offset_real) + 1j * np.sign(x_cpx.imag + offset_imag)
+
+
 ################################################################################
 # Comm dataset V2
 ################################################################################
@@ -204,14 +236,19 @@ class CommDataSet:
         else:
             self.transmit = Transmitter(p, modulator=self.mod, training=True)
 
+        if p.dc_bias:
+            self.quantize_with_dc_bias = QuantizerWithDCBias(p)
+
         self.in_transform = transform
         self.one_bit = one_bit
         self.symbol_only = symbol_only
         self.meta_learn = meta_learn
+        self.dc_bias = p.dc_bias
 
         print("CommDataSet: one_bit mode =", self.one_bit)
         print("CommDataSet: symbol only =", self.symbol_only)
         print("CommDataSet: meta learn =", self.meta_learn)
+        print("CommDataSet: DC bias =", self.dc_bias)
 
     def __repr__(self):
         return "Communication dataset iterable"
@@ -274,7 +311,10 @@ class CommDataSet:
             snr_tsr = n_var_tsr
         # one bit quantization
         if self.one_bit:
-            y_tsr = quantize_o(y_tsr)
+            if self.dc_bias:
+                y_tsr = self.quantize_with_dc_bias(y_tsr)
+            else:
+                y_tsr = quantize_o(y_tsr)
         # generate LLRs (test mode)
         if llr_output: lambda_mat = demod(y_tsr, h_tsr, n_var_tsr)
 
@@ -282,6 +322,7 @@ class CommDataSet:
         h_mat = h_tsr.reshape(N,-1)
         y_mat = y_tsr.reshape(N,-1)
         bit_mat = bit_tsr.reshape(N,-1)
+        sym_mat = syms_tsr.reshape(N,-1)
         n_var_mat = n_var_tsr.reshape(N,-1)
         if p.train.noise_type == 'rand_snr':
             snr_mat = snr_tsr.reshape(N,-1)
@@ -292,9 +333,11 @@ class CommDataSet:
         # convert to reals
         h_mat = cplx2reals(h_mat)
         y_mat = cplx2reals(y_mat)
+        sym_mat = cplx2reals(sym_mat)
         # convert to tensors
         h_mat = tf.convert_to_tensor(h_mat, dtype=tf.float32)
         y_mat = tf.convert_to_tensor(y_mat, dtype=tf.float32)
+        sym_mat = tf.convert_to_tensor(sym_mat, dtype=tf.float32)
         n_var_mat = tf.convert_to_tensor(n_var_mat, dtype=tf.float32)
         if p.train.noise_type == 'rand_snr':
             snr_mat = tf.convert_to_tensor(snr_mat, dtype=tf.int32)
@@ -311,7 +354,7 @@ class CommDataSet:
         if p.train.noise_type == 'rand_snr':
             in_seq = [y_mat, h_mat, snr_mat]
         if in_transform: in_seq = in_transform(in_seq)
-        out_seq = [bit_mat, sym_vec]
+        out_seq = [bit_mat, sym_vec, sym_mat]
         aux_out = lambda_mat
 
         return in_seq, out_seq, aux_out
@@ -327,6 +370,403 @@ class CommDataSet:
         return np.r_[syms.real, syms.imag]
 
 
+class SymbolDetectDataSet:
+    '''
+    Iterable Wrapper for Tensorflow model training (V2)
+    NOTE: Will break existing scripts using V1 dataset
+    '''
+
+    def __init__(self, p, mode='none',
+                          test=False,
+                          one_bit=False,
+                          augment=False):
+        assert( hasattr(p,mode) )
+        self.p = p
+        self.n_iter = p.n_test_steps if test else p.n_train_steps
+        self.test = test
+        self.mode = mode
+        # comm. components
+        self.mod = QAMModulator(p.M)
+        self.channel = Channel(p, mode)
+        self.transmit = SymbolTransmitter(p, modulator=self.mod, training=True)
+
+        if p.dc_bias:
+            self.quantize_with_dc_bias = QuantizerWithDCBias(p)
+
+        if augment:
+            self.est = BussgangEstimator(p)
+
+        self.one_bit = one_bit
+        self.dc_bias = p.dc_bias
+        self.augment = augment
+
+        print("SymbolDetectDataSet: one_bit mode =", self.one_bit)
+        print("SymbolDetectDataSet: DC bias =", self.dc_bias)
+        print("SymbolDetectDataSet: augment =", self.augment)
+
+    def __repr__(self):
+        return "Communication dataset iterable"
+
+    # returns an iterator (self)
+    def __iter__(self):
+        self.cnt = 0 # reset count
+        return self
+
+    # returns the next item in the set
+    def __next__(self):
+        if self.cnt == self.n_iter:
+            raise StopIteration()
+        self.cnt += 1
+        return self.get_training_data()
+
+    # returns a generator (for tf.data.Dataset.from_generator())
+    def get_generator(self):
+        def ds_gen():
+            while True:
+                yield self.get_training_data()
+        return ds_gen
+
+    def get_training_data(self):
+        '''
+        transform data for DNN training
+        NOTE: compute ideal LLRs only in test mode
+        NOTE: always compose input as a sequence of tensors
+              let the model decide was how to structure the tensors
+              e.g., concat or differing pipeline
+
+        outputs:
+            in_seq = [y_mat, h_mat, n_var_mat]
+            out_seq = [bit_mat, lambda_mat, sym_vec]
+        '''
+        p = self.p
+        test = self.test
+        mod = self.mod
+        transmit = self.transmit
+        channel = self.channel
+
+        sym_vec = None
+        lambda_mat = None
+        N = p.batch_size
+
+        # generate payload bits and symbols
+        syms_tsr, bit_tsr = transmit(N)
+        # apply channel and noise
+        y_tsr, h_tsr, n_var_tsr = channel(syms_tsr)
+        # analog signal
+        r_tsr = y_tsr
+        # one bit quantization
+        if self.one_bit:
+            if self.dc_bias:
+                y_tsr = self.quantize_with_dc_bias(y_tsr)
+            else:
+                y_tsr = quantize_o(y_tsr)
+
+        # augment mode
+        if self.augment:
+            syms_bmmse, covar = self.est.estimate(y_tsr, h_tsr, n_var_tsr)
+            syms_err_tsr = syms_tsr - syms_bmmse
+            syms_tsr = syms_err_tsr
+
+        # flatten dimensions i>1
+        h_mat = h_tsr.reshape(N,-1)
+        y_mat = y_tsr.reshape(N,-1)
+        r_mat = r_tsr.reshape(N,-1)
+        bit_mat = bit_tsr.reshape(N,-1)
+        sym_mat = syms_tsr.reshape(N,-1)
+        n_var_mat = n_var_tsr.reshape(N,-1)
+
+        # symbol output?
+        sym_vec = bv2dec(bit_mat)
+
+        # convert to reals
+        h_mat = cplx2reals(h_mat)
+        y_mat = cplx2reals(y_mat)
+        r_mat = cplx2reals(r_mat)
+        sym_mat = cplx2reals(sym_mat)
+        # convert to tensors
+        h_mat = tf.convert_to_tensor(h_mat, dtype=tf.float32)
+        y_mat = tf.convert_to_tensor(y_mat, dtype=tf.float32)
+        r_mat = tf.convert_to_tensor(r_mat, dtype=tf.float32)
+        sym_mat = tf.convert_to_tensor(sym_mat, dtype=tf.float32)
+        n_var_mat = tf.convert_to_tensor(n_var_mat, dtype=tf.float32)
+        bit_mat = tf.convert_to_tensor(bit_mat, dtype=tf.bool)
+        # conditional outputs
+        sym_vec = tf.convert_to_tensor(sym_vec, dtype=tf.int32)
+
+        # output processing
+        in_seq = [y_mat, h_mat, n_var_mat]
+        out_seq = [bit_mat, sym_vec, sym_mat, r_mat]
+        aux_out = []
+
+        return in_seq, out_seq, aux_out
+
+    def transform_input(self, transform_fn):
+        self.in_transform = transform_fn
+        return self
+
+    def get_const_input(self):
+        """ transform constellation for DNN training """
+        mod = self.mod
+        syms, _ = mod.get_const()
+        return np.r_[syms.real, syms.imag]
+
+
+class ModelBasedDataSet:
+    '''
+    Iterable Wrapper for Tensorflow model training (V2)
+    NOTE: Will break existing scripts using V1 dataset
+    '''
+
+    def __init__(self, p, mode='none',
+                          test=False,
+                          one_bit=False):
+        assert( hasattr(p,mode) )
+        self.p = p
+        self.n_iter = p.n_test_steps if test else p.n_train_steps
+        self.test = test
+        self.mode = mode
+        # comm. components
+        self.mod = QAMModulator(p.M)
+        self.channel = Channel(p, mode)
+        self.transmit = SymbolTransmitter(p, modulator=self.mod, training=True)
+
+        self.one_bit = one_bit
+
+        print("SymbolDetectDataSet: one_bit mode =", self.one_bit)
+
+    def __repr__(self):
+        return "Communication dataset iterable"
+
+    # returns an iterator (self)
+    def __iter__(self):
+        self.cnt = 0 # reset count
+        return self
+
+    # returns the next item in the set
+    def __next__(self):
+        if self.cnt == self.n_iter:
+            raise StopIteration()
+        self.cnt += 1
+        return self.get_training_data()
+
+    # returns a generator (for tf.data.Dataset.from_generator())
+    def get_generator(self):
+        def ds_gen():
+            while True:
+                yield self.get_training_data()
+        return ds_gen
+
+    def get_training_data(self):
+        '''
+        transform data for DNN training
+        NOTE: compute ideal LLRs only in test mode
+        NOTE: always compose input as a sequence of tensors
+              let the model decide was how to structure the tensors
+              e.g., concat or differing pipeline
+
+        outputs:
+            in_seq = [y_mat, h_mat, n_var_mat]
+            out_seq = [bit_mat, lambda_mat, sym_vec]
+        '''
+        p = self.p
+        test = self.test
+        mod = self.mod
+        transmit = self.transmit
+        channel = self.channel
+
+        sym_vec = None
+        lambda_mat = None
+        N = p.batch_size
+
+        # generate payload bits and symbols
+        syms_tsr, bit_tsr = transmit(N)
+        # apply channel and noise
+        y_tsr, h_tsr, n_var_tsr = channel(syms_tsr)
+        # analog signal
+        r_tsr = y_tsr
+        # one bit quantization
+        if self.one_bit:
+            y_tsr = quantize_o(y_tsr)
+
+        # flatten dimensions i>1
+        #h_mat = h_tsr.reshape(N,-1)
+        y_mat = y_tsr.reshape(N,-1)
+        r_mat = r_tsr.reshape(N,-1)
+        bit_mat = bit_tsr.reshape(N,-1)
+        sym_mat = syms_tsr.reshape(N,-1)
+        n_var_mat = n_var_tsr.reshape(N,-1)
+
+        # symbol output?
+        sym_vec = bv2dec(bit_mat)
+
+        # convert to reals
+        #h_mat = cplx2reals(h_mat)
+        h_tsr = preproc_channel(h_tsr)
+        y_mat = cplx2reals(y_mat)
+        r_mat = cplx2reals(r_mat)
+        sym_mat = cplx2reals(sym_mat)
+        # convert to tensors
+        #h_mat = tf.convert_to_tensor(h_mat, dtype=tf.float32)
+        h_tsr = tf.convert_to_tensor(h_tsr, dtype=tf.float32)
+        y_mat = tf.convert_to_tensor(y_mat, dtype=tf.float32)
+        r_mat = tf.convert_to_tensor(r_mat, dtype=tf.float32)
+        sym_mat = tf.convert_to_tensor(sym_mat, dtype=tf.float32)
+        x0_mat = tf.zeros_like(sym_mat)
+        n_var_mat = tf.convert_to_tensor(n_var_mat, dtype=tf.float32)
+        bit_mat = tf.convert_to_tensor(bit_mat, dtype=tf.bool)
+        # conditional outputs
+        sym_vec = tf.convert_to_tensor(sym_vec, dtype=tf.int32)
+
+        # output processing
+        in_seq = [y_mat, h_tsr, n_var_mat]
+        out_seq = [bit_mat, sym_vec, sym_mat, r_mat]
+        aux_out = [x0_mat]
+
+        return in_seq, out_seq, aux_out
+
+    def transform_input(self, transform_fn):
+        self.in_transform = transform_fn
+        return self
+
+    def get_const_input(self):
+        """ transform constellation for DNN training """
+        mod = self.mod
+        syms, _ = mod.get_const()
+        return np.r_[syms.real, syms.imag]
+
+
+class PermInvariantDataSet:
+    '''
+    Iterable Wrapper for Tensorflow model training (V2)
+    NOTE: Will break existing scripts using V1 dataset
+    '''
+
+    def __init__(self, p, mode='none',
+                          test=False,
+                          one_bit=False):
+        assert( hasattr(p,mode) )
+        self.p = p
+        self.n_iter = p.n_test_steps if test else p.n_train_steps
+        self.test = test
+        self.mode = mode
+        # comm. components
+        self.mod = QAMModulator(p.M)
+        self.channel = Channel(p, mode)
+        self.transmit = SymbolTransmitter(p, modulator=self.mod, training=True)
+
+        if p.dc_bias:
+            self.quantize_with_dc_bias = QuantizerWithDCBias(p)
+
+        self.one_bit = one_bit
+        self.dc_bias = p.dc_bias
+
+        print("SymbolDetectDataSet: one_bit mode =", self.one_bit)
+        print("SymbolDetectDataSet: DC bias =", self.dc_bias)
+
+    def __repr__(self):
+        return "Communication dataset iterable"
+
+    # returns an iterator (self)
+    def __iter__(self):
+        self.cnt = 0 # reset count
+        return self
+
+    # returns the next item in the set
+    def __next__(self):
+        if self.cnt == self.n_iter:
+            raise StopIteration()
+        self.cnt += 1
+        return self.get_training_data()
+
+    # returns a generator (for tf.data.Dataset.from_generator())
+    def get_generator(self):
+        def ds_gen():
+            while True:
+                yield self.get_training_data()
+        return ds_gen
+
+    def get_training_data(self):
+        '''
+        transform data for DNN training
+        NOTE: compute ideal LLRs only in test mode
+        NOTE: always compose input as a sequence of tensors
+              let the model decide was how to structure the tensors
+              e.g., concat or differing pipeline
+
+        outputs:
+            in_seq = [y_mat, h_mat, n_var_mat]
+            out_seq = [bit_mat, lambda_mat, sym_vec]
+        '''
+        p = self.p
+        test = self.test
+        mod = self.mod
+        transmit = self.transmit
+        channel = self.channel
+
+        sym_vec = None
+        lambda_mat = None
+        N = p.batch_size
+
+        # generate payload bits and symbols
+        syms_tsr, bit_tsr = transmit(N)
+        # apply channel and noise
+        y_tsr, h_tsr, n_var_tsr = channel(syms_tsr)
+        # analog signal
+        r_tsr = y_tsr
+        # one bit quantization
+        if self.one_bit:
+            if self.dc_bias:
+                y_tsr = self.quantize_with_dc_bias(y_tsr)
+            else:
+                y_tsr = quantize_o(y_tsr)
+
+        # flatten dimensions i>1
+        #h_mat = h_tsr.reshape(N,-1)
+        y_mat = y_tsr.reshape(N,-1)
+        r_mat = r_tsr.reshape(N,-1)
+        bit_mat = bit_tsr.reshape(N,-1)
+        sym_mat = syms_tsr.reshape(N,-1)
+        n_var_mat = n_var_tsr.reshape(N,-1)
+
+        # symbol output?
+        sym_vec = bv2dec(bit_mat)
+
+        # convert to reals
+        #h_mat = cplx2reals(h_mat)
+        h_tsr = preproc_channel(h_tsr)
+        y_mat = cplx2reals(y_mat)
+        r_mat = cplx2reals(r_mat)
+        sym_mat = cplx2reals(sym_mat)
+        # convert to tensors
+        h_tsr = tf.convert_to_tensor(h_tsr, dtype=tf.float32)
+        y_mat = tf.convert_to_tensor(y_mat, dtype=tf.float32)
+        r_mat = tf.convert_to_tensor(r_mat, dtype=tf.float32)
+        sym_mat = tf.convert_to_tensor(sym_mat, dtype=tf.float32)
+        n_var_mat = tf.convert_to_tensor(n_var_mat, dtype=tf.float32)
+        bit_mat = tf.convert_to_tensor(bit_mat, dtype=tf.bool)
+        # conditional outputs
+        sym_vec = tf.convert_to_tensor(sym_vec, dtype=tf.int32)
+
+        # output processing
+        in_seq = [y_mat, h_tsr, n_var_mat]
+        out_seq = [bit_mat, sym_vec, sym_mat, r_mat]
+        aux_out = []
+
+        return in_seq, out_seq, aux_out
+
+    def transform_input(self, transform_fn):
+        self.in_transform = transform_fn
+        return self
+
+    def get_const_input(self):
+        """ transform constellation for DNN training """
+        mod = self.mod
+        syms, _ = mod.get_const()
+        return np.r_[syms.real, syms.imag]
+
+################################################################################
+# Dnn wrappers for evaluation
+################################################################################
 class DnnDemod:
     '''
     Encapsulate trained Tensorflow model
@@ -421,4 +861,138 @@ class DnnDetector:
         syms_mat = None
 
         return bits_mat, syms_mat
+
+
+class DnnEstimator:
+    '''
+    Encapsulate trained Tensorflow model
+    Implements Estimator-Detector interface
+    '''
+
+    def __init__(self, p, augment=False):
+        self.p = p
+        fname = '/'.join((p.m_dir, p.m_file))
+        print('DnnEstimator: loading model from file:', fname)
+        self.model = tf.saved_model.load(fname)
+        # instantiate per symbol detector
+        from .core import PerSymbolDetector
+        self.det = PerSymbolDetector(p)
+        # save options
+        if augment:
+            self.est = BussgangEstimator(p)
+
+        self.augment = augment
+        print('DnnEstimator: augment =', augment)
+
+
+    def __call__(self, *args, **kwargs):
+        return self.compute_llrs(*args, **kwargs)
+
+    def compute_llrs(self, y_tsr, h_tsr, n_var_tsr, scaling=True):
+        p = self.p
+        model = self.model
+        N = y_tsr.shape[0]
+
+        # FIXME:specify dtype
+        #dtype = tf.float64
+        dtype = tf.float32
+
+        # flatten dimensions i>1
+        h_mat = h_tsr.reshape(N,-1)
+        y_mat = y_tsr.reshape(N,-1)
+        n_var_mat = n_var_tsr.reshape(N,-1)
+        # convert to reals
+        h_mat = cplx2reals(h_mat)
+        y_mat = cplx2reals(y_mat)
+        # convert to tensors
+        h_mat = tf.convert_to_tensor(h_mat, dtype=dtype)
+        y_mat = tf.convert_to_tensor(y_mat, dtype=dtype)
+        n_var_mat = tf.convert_to_tensor(n_var_mat, dtype=dtype)
+
+        # convert n_var to integer
+        #n_var_mat = tf.convert_to_tensor(n_var_mat, dtype=tf.int32)
+
+        # input processing
+        in_seq = [y_mat, h_mat, n_var_mat]
+        sym_est = model(in_seq)
+        # convert to numpy
+        sym_est = sym_est.numpy()
+        # convert to complex
+        sym_est = reals2cplx(sym_est)
+        # add dimension for array multiplication
+        sym_est = sym_est[:,:,None]
+        # augment step
+        if self.augment:
+            syms_bmmse, covar = self.est.estimate(y_tsr, h_tsr, n_var_tsr)
+            sym_est = sym_est + syms_bmmse
+        # output processing
+        bits_msd, syms_msd = self.det.compute_msd(sym_est)
+        # return to 2d
+        sym_est = np.squeeze(sym_est)
+
+        return bits_msd, syms_msd, sym_est
+
+
+class ModelBasedDnnEstimator:
+    '''
+    Encapsulate trained Tensorflow model
+    Implements Estimator-Detector interface
+    '''
+
+    def __init__(self, p):
+        self.p = p
+        fname = '/'.join((p.m_dir, p.m_file))
+        print('ModelBasedDnnEstimator: loading model from file:', fname)
+        self.model = tf.saved_model.load(fname)
+        # instantiate per symbol detector
+        from .core import PerSymbolDetector
+        self.det = PerSymbolDetector(p)
+
+
+    def __call__(self, *args, **kwargs):
+        return self.compute_llrs(*args, **kwargs)
+
+    def compute_llrs(self, y_tsr, h_tsr, n_var_tsr, scaling=True):
+        p = self.p
+        model = self.model
+        N = y_tsr.shape[0]
+        x_dim = p.N_tx * 2
+
+        # FIXME:specify dtype
+        #dtype = tf.float64
+        dtype = tf.float32
+
+        # flatten dimensions i>1
+        #h_mat = h_tsr.reshape(N,-1)
+        y_mat = y_tsr.reshape(N,-1)
+        n_var_mat = n_var_tsr.reshape(N,-1)
+        # convert to reals
+        #h_mat = cplx2reals(h_mat)
+        h_tsr = preproc_channel(h_tsr)
+        y_mat = cplx2reals(y_mat)
+        # convert to tensors
+        #h_mat = tf.convert_to_tensor(h_mat, dtype=dtype)
+        h_tsr = tf.convert_to_tensor(h_tsr, dtype=dtype)
+        y_mat = tf.convert_to_tensor(y_mat, dtype=dtype)
+        n_var_mat = tf.convert_to_tensor(n_var_mat, dtype=dtype)
+        x0_mat = tf.zeros( (N, x_dim) )
+
+        # convert n_var to integer
+        #n_var_mat = tf.convert_to_tensor(n_var_mat, dtype=tf.int32)
+
+        # input processing
+        in_seq = [x0_mat, y_mat, h_tsr]
+        sym_est = model(in_seq)
+        # convert to numpy
+        sym_est = sym_est.numpy()
+        # convert to complex
+        sym_est = reals2cplx(sym_est)
+        # add dimension for array multiplication
+        sym_est = sym_est[:,:,None]
+        # output processing
+        bits_msd, syms_msd = self.det.compute_msd(sym_est)
+        # return to 2d
+        sym_est = np.squeeze(sym_est)
+
+        return bits_msd, syms_msd, sym_est
 
