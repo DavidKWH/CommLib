@@ -5,7 +5,8 @@ import numpy.linalg as la
 from functools import partial
 
 from .core import QAMModulator
-from .core import PerSymbolDetector
+#from .core import PerSymbolDetector
+from .core import PerSymbolDetectorV2
 from scipy.stats import norm
 
 # define diag_matrix operation
@@ -33,12 +34,12 @@ class BussgangDetector:
 
     Based on BussgangEstimator
     '''
-    def __init__(self, p, modulator=None, mode='bmmse', rescale=False):
+    def __init__(self, p, modulator=None, mode='bmmse'):
         self.p = p
         self.mode = mode
         self.est = partial(self.estimators[mode], self)
-        self.det = PerSymbolDetector(p, modulator)
-        self.rescale = rescale
+        #self.det = PerSymbolDetector(p, modulator)
+        self.det = PerSymbolDetectorV2(p, modulator)
         print(f'Bussgang detector mode = {mode}')
 
 #    def covar(self, w_mat, S_r):
@@ -159,25 +160,24 @@ class BussgangDetector:
         W_herm = np.conj(W).swapaxes(1,2)
         covar_tsr = W @ S_n_tsr @ W_herm
 
-#        # equalize per symbol x_hat
-#        WH = w_tsr @ h_tsr
-#        WH_diag = np.diagonal(WH, axis1=1, axis2=2)
-#        # TODO: WH_diag using explicit einsum (enable broadcasting)
-#        #WH_diag = np.einsum('...ij,...ji->...i', w_tsr, h_tsr)
-#        # implements element-wise x_hat_tsr / WH_diag
-#        x_hat_eq = np.reciprocal(WH_diag)[...,None] * x_hat_tsr
-#        # assign to x_hat_tsr
-#        x_hat_tsr = x_hat_eq
-#
-#        # (optional) rescale
-#        #if self.rescale:
-#        if True:
-#            K_sqrt = np.sqrt(N_tx)
-#            x_hat_norms = la.norm(x_hat_eq, axis=1) # l2-norm
-#            x_hat_rescaled = [ x_hat / norm for (x_hat, norm) in zip(x_hat_eq, x_hat_norms) ]
-#            x_hat_rescaled = K_sqrt * np.array(x_hat_rescaled)
-#            # assign to x_hat_tsr
-#            x_hat_tsr = x_hat_rescaled
+        # equalize per symbol x_hat
+        #WH = w_tsr @ h_tsr
+        WH = w_tsr @ A_tsr
+        WH_diag = np.diagonal(WH, axis1=1, axis2=2)
+        # TODO: WH_diag using explicit einsum (enable broadcasting)
+        #WH_diag = np.einsum('...ij,...ji->...i', w_tsr, h_tsr)
+        # implements element-wise x_hat_tsr / WH_diag
+        x_hat_eq = np.reciprocal(WH_diag)[...,None] * x_hat_tsr
+        # assign to x_hat_tsr
+        x_hat_tsr = x_hat_eq
+
+        # rescale
+        K_sqrt = np.sqrt(N_tx)
+        x_hat_norms = la.norm(x_hat_eq, axis=1) # l2-norm
+        x_hat_rescaled = [ x_hat / norm for (x_hat, norm) in zip(x_hat_eq, x_hat_norms) ]
+        x_hat_rescaled = K_sqrt * np.array(x_hat_rescaled)
+        # assign to x_hat_tsr
+        x_hat_tsr = x_hat_rescaled
 
         # per symbol detection
         bits_msd, syms_msd = self.det.compute_msd(x_hat_tsr)
@@ -280,6 +280,7 @@ class BussgangEstimator:
         #S_n_tsr = [ compute_S_n(S_r, n_var) for (S_r, n_var) in zip(S_r_tsr, n_var_tsr) ]
 
         N_rx = h_tsr.shape[1]
+        N_tx = h_tsr.shape[2]
         H = h_tsr
         I = np.identity(N_rx)
         I = I[None,...]
@@ -310,6 +311,25 @@ class BussgangEstimator:
         W = w_tsr
         W_herm = np.conj(W).swapaxes(1,2)
         covar_tsr = W @ S_n_tsr @ W_herm
+
+        # equalize per symbol x_hat
+        #WH = w_tsr @ h_tsr
+        WH = w_tsr @ A_tsr
+        WH_diag = np.diagonal(WH, axis1=1, axis2=2)
+        # TODO: WH_diag using explicit einsum (enable broadcasting)
+        #WH_diag = np.einsum('...ij,...ji->...i', w_tsr, h_tsr)
+        # implements element-wise x_hat_tsr / WH_diag
+        x_hat_eq = np.reciprocal(WH_diag)[...,None] * x_hat_tsr
+        # assign to x_hat_tsr
+        x_hat_tsr = x_hat_eq
+
+        # rescale
+        K_sqrt = np.sqrt(N_tx)
+        x_hat_norms = la.norm(x_hat_eq, axis=1) # l2-norm
+        x_hat_rescaled = [ x_hat / norm for (x_hat, norm) in zip(x_hat_eq, x_hat_norms) ]
+        x_hat_rescaled = K_sqrt * np.array(x_hat_rescaled)
+        # assign to x_hat_tsr
+        x_hat_tsr = x_hat_rescaled
 
         return x_hat_tsr, covar_tsr
 
