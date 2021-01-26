@@ -131,3 +131,37 @@ class SymbolErrorRate:
 
         total = cnt * N
         return errs / total
+
+
+class RawBitErrorRate:
+    '''
+    Implement the BER metric (Uncoded)
+    '''
+    def __init__(self, shape):
+        # shape = [N_syms, nbpsv]
+        self.errs = 0
+        self.cnt = 0
+        self.shape = shape
+        self.N = shape[0] * shape[1]
+
+    def __call__(self, *args, **kwargs):
+        self.update_state(*args, **kwargs)
+
+    def update_state(self, true, pred):
+        assert np.array_equal(pred.shape, self.shape)
+        bit_errs = np.sum(true != pred)
+        self.cnt += 1
+        self.errs += bit_errs
+
+    def reset_states(self):
+        self.errs = 0
+        self.cnt = 0
+
+    def result(self):
+        cnt = self.cnt
+        errs = self.errs
+        N = self.N
+
+        total = cnt * N
+        return errs / total
+
