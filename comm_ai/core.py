@@ -19,6 +19,19 @@ from .params import has_key
 ################################################################################
 # comm. utility functions
 ################################################################################
+def preproc_channel(h):
+    '''
+    convert complex channel to real equivalent
+    channel.shape = (N, N_rx, N_tx)
+    '''
+    assert(h.dtype == np.complex)
+    # collect real and imag components along N_tx dimension
+    h_comp_real = np.concatenate([h.real, -h.imag], axis=-1)
+    h_comp_imag = np.concatenate([h.imag,  h.real], axis=-1)
+    # stack along N_rx dimension
+    h_all = np.concatenate([h_comp_real, h_comp_imag], axis=-2)
+
+    return h_all
 
 def crandn(*args):
     '''
@@ -38,6 +51,18 @@ def cplx2reals(a):
     if a.ndim == 1: a = a[:,np.newaxis]
     ac_all = np.concatenate([a.real, a.imag], axis=-1)
     return ac_all
+
+def reals2cplx(a):
+    '''
+    convert the real matrix produced in cplx2reals()
+    back to the original complex matrix
+    '''
+    real_dim = a.shape[-1]
+    assert (real_dim % 2 == 0)
+    real_idx = real_dim // 2
+    real = a[...,:real_idx]
+    imag = a[...,real_idx:]
+    return real + 1j * imag
 
 def cplx2reals_old(a):
     '''
@@ -332,6 +357,10 @@ class Channel:
         self.ch_batch_fixed = has_key(pm.ch_type, 'batch_fixed')
         self.n_batch_fixed = has_key(pm.noise_type, 'batch_fixed')
         self.ch_file = pm.ch_file if pm.ch_type == 'fixed' else None
+        self.normalize = pm.normalize if hasattr(pm, 'normalize') else True
+
+        if hasattr(pm, 'normalize'):
+            print(f'Channel: normalize = {pm.normalize}')
 
         if mode is not None:
             print(f'Channel: using {mode} parameters')
@@ -450,7 +479,9 @@ class Channel:
 
         Add batch_fixed mode for DNN training
         '''
-        scale = 1 / np.sqrt(N_tx)
+        scale = 1
+        if self.normalize:
+            scale = 1 / np.sqrt(N_tx)
 
         if self.ch_batch_fixed:
             # repeat H N-times
@@ -903,6 +934,73 @@ class SymbolEstimator:
 ################################################################################
 # demapper classes
 ################################################################################
+class PerSymbolDetectorV2:
+    '''
+    Implements per symbol detector
+
+    x_k_det = argmin_{x_k \in X} | x_k_hat - x_k |^2, \forall k
+    '''
+    def __init__(self, p,
+                 modulator = None
+                 ):
+        self.p = p
+        if modulator:
+            self.mod = modulator
+        else:
+            # assume QAM used
+            self.mod = QAMModulator(p.M)
+
+        ################################
+        # precompute symbol tables
+        ################################
+        # generate bv/symbol tables
+        sym_mat, bit_mat = self.mod.get_const()
+        # save sym and bit vector table
+        self.sym_mat = sym_mat
+        self.bit_mat = bit_mat
+
+    def __call__(self, *args, **kwargs):
+        return self.compute_msd(*args, **kwargs)
+
+    def compute_msd(self, x_hat_tsr, scaling=True):
+        '''
+        compute closest distance solution
+        x_det = argmax_{x \in X} |x_hat - x|^2, where X = alphabet
+
+        x_hat_tsr.shape = [N, N_tx, 1]
+        '''
+        p = self.p
+        N = x_hat_tsr.shape[0]
+        syms = self.sym_mat
+        bits = self.bit_mat
+
+        ## compute squared distance
+        #############################
+
+        # define l2_norm()
+        l2_norm = partial(np.linalg.norm, ord=2, axis=2)
+
+        # implement quad_mat_x using tensor broadcasting
+        syms_ex = syms[np.newaxis,:,:,np.newaxis]
+        x_hat = x_hat_tsr[:,np.newaxis,:,:]
+
+        #quad_mat = abs(x_hat - syms_ex)**2
+        diff_mat = x_hat - syms_ex
+        quad_mat = diff_mat.real**2 + diff_mat.imag**2
+        quad_mat = np.squeeze(quad_mat, axis=3)
+        min_idx = np.argmin(quad_mat, axis=1)
+
+        # return the ML solutions
+        syms_ml = syms[min_idx]
+        bits_ml = bits[min_idx,:]
+        # fix up
+        syms_ml = np.squeeze(syms_ml, axis=2)
+        bits_ml = np.reshape(bits_ml,(N,-1))
+
+        # return ML solutions
+        return bits_ml, syms_ml
+
+
 class PerSymbolDetector:
     '''
     Implements per symbol detector
@@ -973,7 +1071,7 @@ class PerSymbolDetector:
             return sym_a, bit_a
 
     def __call__(self, *args, **kwargs):
-        return self.compute_ml(*args, **kwargs)
+        return self.compute_msd(*args, **kwargs)
 
     def compute_msd(self, x_hat_tsr, scaling=True):
         '''
