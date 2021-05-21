@@ -10,10 +10,21 @@ from tensorflow.keras.layers import Layer
 #from tensorflow.keras.layers import BatchNormalization
 #from tensorflow.keras import activations
 #from tensorflow.keras import initializers
+# constraints, initializers, etc.
+from tensorflow.keras.constraints import NonNeg
 # misc.
 from functools import partial
 # debug
 #from .util import DumpFullTensor
+
+import tensorflow_probability as tfp
+tfd = tfp.distributions
+
+dist = tfd.Normal(loc=0., scale=1.)
+
+def rhazard(x):
+    out = tf.exp( dist.log_prob(x) - dist.log_cdf(x) )
+    return out
 
 
 class OBMNetLayer(Layer):
@@ -44,6 +55,13 @@ class OBMNetLayer(Layer):
                                      initializer=self.initializer,
                                      trainable=True)
 
+        # object level
+        #self.beta = self.add_weight(name='beta', # needed for tf.saved_model.save()
+        #                            shape=(),
+        #                            initializer=self.initializer,
+        #                            constraint=NonNeg(),
+        #                            trainable=True)
+
     def call(self, inputs, training=False):
         # define layer computation
         # inputs = [x, G]
@@ -58,6 +76,7 @@ class OBMNetLayer(Layer):
         #x = tf.matmul(x, -tf.transpose(G, perm=[0,2,1]) )
         x = tf.matmul(x, -G, transpose_b=True)
         s = self.sigmoid(self.beta * x)
+        #s = rhazard(self.beta * x)
         # compute G^T s
         x = tf.matmul(s, G)
         x = tf.squeeze(x, axis=1)
