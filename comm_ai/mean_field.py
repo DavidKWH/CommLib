@@ -16,6 +16,7 @@ from .core import QAMModulator
 from .core import PerSymbolDetectorV2
 
 from scipy.stats import norm
+from scipy.special import logsumexp
 
 # helper functions
 def compute_qi(log_qi):
@@ -138,32 +139,42 @@ class OneBitSampMeanFieldDetector:
         N_syms_re = syms.size
         sqrt_M = np.sqrt(p.M).astype(int)
 
-        def compute_log_p(y, H, s_mat, shape):
-            # we compute the log likelihood for all combinations
+        def compute_log_p(y, H, s_tsr):
+            shape = s_tsr.shape
+            # s_tsr.shape = [2K , N_samp , N_syms_re]
+            s_mat = s_tsr.reshape(shape[0], -1)
+            # s_mat.shape = [2K , (N_samp , N_syms_re)]
+
             sG = sqrt_2rho * np.diag(y) @ H
             term = sG @ s_mat
-            #log_p_mat = np.log( norm.cdf(term) )
             # numerically stable version
             log_p_mat = norm.logcdf(term)
-            # log_p_mat.shape = [2N * (M^K)]
+            # log_p_mat.shape = [2N , (N_samp * N_syms_re)]
             log_p_vec = np.sum(log_p_mat, axis=0)
-            # reshape
-            log_p_tsr = log_p_vec.reshape( shape )
+            # log_p_tsr.shape = [N_samp , N_syms_re]
+            log_p_tsr = log_p_vec.reshape( shape[1:] )
 
             return log_p_tsr
 
-        def compute_log_ps(y, H, s_mat, shape):
+        def compute_log_ps(y, H, s_tsr):
             ''' sigmoid approximation '''
-            c = 1.702
+            shape = s_tsr.shape
+            # s_tsr.shape = [2K , N_samp , N_syms_re]
+            s_mat = s_tsr.reshape(shape[0], -1)
+            # s_mat.shape = [2K , (N_samp * N_syms_re)]
 
+            c = 1.702
             sG = sqrt_2rho * np.diag(y) @ H
             term = sG @ s_mat
-
+            # sigmoid approximation
+            # compute log p = log sigmoid
             log_p_mat = - np.log( 1 + np.exp(- c * term ) )
-            # log_p_mat.shape = [2N * (N_samp)]
+            # FIXME: consider this version
+            #log_p_mat = - logsumexp((0, -c * term))
+            # log_p_mat.shape = [2N , (N_samp * N_syms_re)]
             log_p_vec = np.sum(log_p_mat, axis=0)
-            # reshape
-            log_p_tsr = log_p_vec.reshape( shape )
+            # log_p_tsr.shape = [N_samp , N_syms_re]
+            log_p_tsr = log_p_vec.reshape( shape[1:] )
 
             return log_p_tsr
 
@@ -177,15 +188,11 @@ class OneBitSampMeanFieldDetector:
                 i_samp[ii,:] = indices
             s_samp = syms[i_samp]
 
-            s_map = np.tile(s_samp, (1,N_syms_re))
-
-            # generate combination of constellation
-            #syms_re = syms_re.reshape(1,-1)
-            syms_rep = np.kron( syms, np.ones((1,N_samp)) )
+            #s_map.shape = (N_tx_real, N_samp, N_syms_re)
+            s_map = np.repeat(s_samp[...,None], N_syms_re, axis=-1)
 
             # insert into s_map
-            s_map[xi_idx,:] = syms_rep
-            import pdb; pdb.set_trace()
+            s_map[xi_idx,:,:] = syms
 
             return s_map
 
@@ -208,12 +215,11 @@ class OneBitSampMeanFieldDetector:
                 # sample from qi
                 s_map = construct_samples(qi,xi)
                 # compute log p using samples
-                shape = (-1, N_samp)
-                #log_p = compute_log_p(y, H, s_map, shape)
-                log_p = compute_log_ps(y, H, s_map, shape)
+                #log_p = compute_log_p(y, H, s_map)
+                log_p = compute_log_ps(y, H, s_map)
 
                 # approx with average
-                ex_log_qi = np.mean(log_p, axis=1)
+                ex_log_qi = np.mean(log_p, axis=0)
 
                 # add damping
                 log_qi[xi] = (1-alpha) * log_qi[xi] + alpha * ex_log_qi
