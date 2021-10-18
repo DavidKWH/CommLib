@@ -843,6 +843,7 @@ class ResidualV2(Layer):
     def __init__(self, units,
                        activation=None,
                        kernel_initializer=None,
+                       kernel_regularizer=None,
                        batch_normalization=False,
                        unmatched_dimensions=False):
         super().__init__()
@@ -854,7 +855,8 @@ class ResidualV2(Layer):
         use_bias = not batch_normalization
         dense_linear_layer = partial(Dense, activation=None,
                                             use_bias=use_bias,
-                                            kernel_initializer=kernel_initializer)
+                                            kernel_initializer=kernel_initializer,
+                                            kernel_regularizer=kernel_regularizer)
         batch_norm_layer = BatchNormalization
 
         self.dl_layer_1 = dense_linear_layer(units)
@@ -1055,6 +1057,129 @@ class MaxOut(Layer):
         x = tf.math.multiply(inputs[:,:,None] , gi[None,:,:])
         out = tf.math.reduce_max(x, axis=2)
         return out
+
+################################################################################
+# layer with shared weights
+################################################################################
+
+class DenseWithMerge(Layer):
+    '''
+    Dense layer with block sharing
+    '''
+    def __init__(self, n_rx, i_units, o_units,
+                       activation=None,
+                       kernel_initializer=None,
+                       kernel_regularizer=None,
+                       batch_normalization=False):
+        super().__init__()
+        self.i_units = i_units
+        self.o_units = o_units
+        self.initializer = kernel_initializer
+        self.input_len = n_rx * i_units
+
+    def build(self, input_shape):
+        #assert(input_shape[-1] == self.input_len)
+        self.w = self.add_weight(name='w', # needed for tf.saved_model.save()
+                                 shape=(self.i_units, self.o_units),
+                                 initializer=self.initializer,
+                                 trainable=True)
+#        self.b = self.add_weight(name='b',
+#                                 shape=(self.o_units,),
+#                                 initializer="zeros",
+#                                 trainable=True)
+
+    def call(self, inputs):
+        # inputs is a list whose element is
+        # input_element.shape = (N, 1 , i_units)
+        x_list = inputs
+
+        y_comp_tsrs = [ tf.matmul(x, self.w) for x in x_list ]
+        y_comp_tsr = tf.concat(y_comp_tsrs, axis=1)
+        y_sum_tsr = tf.math.reduce_sum(y_comp_tsr, axis=1)
+
+        # add bias
+        #y = y_sum_tsr + self.b
+        y = y_sum_tsr
+
+        return y
+
+
+
+class MLP(Layer):
+    '''
+    Create an MLP class
+    '''
+    def __init__(self, n_layers, h_units, o_units,
+                       activation=None,
+                       kernel_initializer=None,
+                       kernel_regularizer=None,
+                       batch_normalization=False):
+        super().__init__()
+
+        dense_linear_layer = partial(Dense, activation=activation,
+                                            kernel_initializer=kernel_initializer,
+                                            kernel_regularizer=kernel_regularizer)
+
+        self.h_layer = dense_linear_layer(h_units)
+        self.o_layer = dense_linear_layer(o_units)
+
+        self.n_layers = 2
+        self.h_units = h_units
+        self.o_units = o_units
+
+        print(f'MLP: num layers = {self.n_layers}')
+
+    def call(self, inputs, training=False):
+        x = inputs
+
+        x = self.h_layer(x)
+        x = self.o_layer(x)
+
+        return x
+
+    def num_layers(self):
+        return self.n_layers
+
+
+class DenseSharedWeights(Layer):
+    '''
+    Create a dense class that share weights
+    '''
+    def __init__(self, ref):
+        super().__init__()
+
+        self.ref_layer = ref
+        self.W = ref.get_weights()[0]
+        self.b = ref.get_weights()[1]
+        self.activation = ref.activation
+
+    def call(self, inputs):
+
+        x = tf.linalg.matmul(inputs, self.W) + self.b
+
+        if self.activation is not None:
+            return self.activation(x)
+        return x
+
+class MLPSharedWeights(Layer):
+    '''
+    Create a class that can share weights
+    '''
+    def __init__(self, ref):
+        super().__init__()
+        self.ref_mlp = ref
+
+    def build(self, input_shape):
+        ref = self.ref_mlp
+        self.h_layer = DenseSharedWeights(ref.h_layer)
+        self.o_layer = DenseSharedWeights(ref.o_layer)
+
+    def call(self, inputs):
+        x = inputs
+        x = self.h_layer(x)
+        x = self.o_layer(x)
+        return x
+
 
 ################################################################################
 # Self conceived layers
