@@ -135,7 +135,7 @@ class MFBasedDataSet:
         log_qi_mat = tf.zeros(shape)
 
         # output processing
-        in_seq = [y_mat, h_tsr, r2rho_mat]
+        in_seq = [y_mat, h_tsr, r2rho_mat, n_var_mat]
         out_seq = [None, sym_id_mat, sym_mat, r_mat]
         aux_out = [log_qi_mat]
 
