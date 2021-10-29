@@ -19,6 +19,36 @@ from .params import has_key
 ################################################################################
 # comm. utility functions
 ################################################################################
+def deintrv_bits(bits, from_flatten=True):
+    '''
+    deinterleave bits from format
+    from: bits.shape = (N, N_tx, nbps)
+    to  : bits.shape = (N, N_tx*2, nbps/2)
+    '''
+    N = bits.shape[0]
+    bit_list = np.split(bits, 2, axis=-1)
+    #bit_list = [np.squeeze(x, axis=-1) for x in bit_list]
+    #real_bits, imag_bits = bit_list
+    bits_tsr = np.concatenate(bit_list, axis=-2)
+
+    return bits_tsr
+
+def intrv_bits(bits, flatten=True):
+    '''
+    interleave bits from format
+    from: bits.shape = (N, N_tx*2, nbps/2)
+    to  : bits.shape = (N, N_tx, nbps)
+    '''
+    N = bits.shape[0]
+    bit_list = np.split(bits, 2, axis=-2)
+    #bit_list = [np.squeeze(x, axis=-2) for x in bit_list]
+    #real_bits, imag_bits = bit_list
+    bits_tsr = np.concatenate(bit_list, axis=-1)
+    if flatten:
+        return bits_tsr.reshape(N,-1)
+    return bits_tsr
+
+
 def preproc_channel(h):
     '''
     convert complex channel to real equivalent
@@ -41,23 +71,22 @@ def crandn(*args):
     samps = np.sqrt(0.5) * (randn(*args) + randn(*args) * 1j)
     return samps
 
-def cplx2reals(a):
+def cplx2reals(a, axis=-1):
     '''
     convert complex tensor of shape (M,N,...,K) into
     real tensor of shape (M,N,...,2k) by concatenating
     the real and image matrix along the last dimension
     '''
     assert (a.dtype == np.complex)
-    if a.ndim == 1: a = a[:,np.newaxis]
-    ac_all = np.concatenate([a.real, a.imag], axis=-1)
+    ac_all = np.concatenate([a.real, a.imag], axis)
     return ac_all
 
-def reals2cplx(a):
+def reals2cplx(a, axis=-1):
     '''
     convert the real matrix produced in cplx2reals()
     back to the original complex matrix
     '''
-    real_dim = a.shape[-1]
+    real_dim = a.shape[axis]
     assert (real_dim % 2 == 0)
     real_idx = real_dim // 2
     real = a[...,:real_idx]
@@ -78,12 +107,30 @@ def cplx2reals_old(a):
     ac_all = ac_all.reshape(N,-1, order='F')
     return ac_all
 
-def dec2bv(dec_vec, n=None):
+def dec2bv(dec_tsr, n=None):
     '''
     convert unsigned decimals to MSB-first binary vectors
     NOTE: bit vectors are MSB-first (e.g. 6 => '110')
     '''
-    max_val = np.max(dec_vec)
+    max_val = np.max(dec_tsr) + 1
+    nbits = np.ceil(np.log2(max_val)).astype(int)
+
+    if n: nbits = n
+
+    shape = dec_tsr.shape
+    dec_tsr = np.squeeze(dec_tsr)
+    dec_tsr = dec_tsr[...,None]
+    bit_mask = np.flip(1 << np.arange(nbits))
+    bit_mat = (dec_tsr & bit_mask) > 0
+
+    return bit_mat
+
+def dec2bv_old(dec_vec, n=None):
+    '''
+    convert unsigned decimals to MSB-first binary vectors
+    NOTE: bit vectors are MSB-first (e.g. 6 => '110')
+    '''
+    max_val = np.max(dec_vec) + 1
     nbits = np.ceil(np.log2(max_val)).astype(int)
 
     if n: nbits = n
@@ -94,7 +141,20 @@ def dec2bv(dec_vec, n=None):
 
     return bit_mat
 
-def bv2dec(bit_mat):
+def bv2dec(bit_tsr):
+    '''
+    convert MSB-first binary (row) vectors to unsigned decimals
+    NOTE: bit vectors are MSB-first (e.g. 6 <= '110')
+    '''
+    nbits = bit_tsr.shape[-1]
+    ndim = bit_tsr.ndim
+
+    base_vec = np.flip(1 << np.arange(nbits))
+    dec_vec = np.sum(bit_tsr * base_vec, axis=-1)
+
+    return dec_vec
+
+def bv2dec_old(bit_mat):
     '''
     convert MSB-first binary (row) vectors to unsigned decimals
     NOTE: bit vectors are MSB-first (e.g. 6 <= '110')
@@ -105,6 +165,7 @@ def bv2dec(bit_mat):
     dec_vec = np.sum(bit_mat * base_vec[None,:], axis=1)
 
     return dec_vec
+
 
 ################################################################################
 # comm. classes
@@ -189,6 +250,41 @@ class Receiver:
 ################################################################################
 # high level transmitter class
 ################################################################################
+class PilotGenerator:
+    def __init__(self, p,
+                 training = False,
+                 ):
+
+        self.p = p
+        self.training = training
+        assert(p.N_tx <= p.N_t)
+
+    def __call__(self, *args, **kwargs):
+        return self.generate(*args, **kwargs)
+
+    def generate(self, N=None, debug=False):
+        '''
+        generate pilots from DFT matrix
+        '''
+        p = self.p
+        training = self.training
+        tensor_output = training or debug
+
+        # generate output symbols
+        N_raw = p.N if N == None else N
+
+        # use columns in DFT matrix
+        # TODO: do we need random selection from DFT?
+        # np.random.choice(5, 3, replace=False)
+        from scipy.linalg import dft
+        D = dft(p.N_t)
+        X = D[:p.N_tx,:]
+        pilots_tsr = np.tile(X, (N_raw,1,1))
+
+        # return symbols, raw bits
+        return pilots_tsr
+
+
 class SymbolTransmitter:
     '''
     Symbol level transmitter (for SER)
@@ -207,7 +303,7 @@ class SymbolTransmitter:
     def __call__(self, *args, **kwargs):
         return self.generate(*args, **kwargs)
 
-    def generate(self, N=None, debug=False):
+    def generate(self, N=None, debug=False, bit_tsr=False):
         '''
         generate raw payload bits and symbols
         '''
@@ -221,6 +317,9 @@ class SymbolTransmitter:
         raw_bit_tsr = rnd.randint(2, size=(N_raw, p.N_sts * p.nbps))
         raw_bit_mats = np.split(raw_bit_tsr, p.N_sts, axis=1)
         raw_bit_list = [ bit_mat.reshape(-1) for bit_mat in raw_bit_mats ]
+
+        if bit_tsr:
+            raw_bit_tsr = raw_bit_tsr.reshape(N_raw, p.N_sts, p.nbps)
 
         syms_list = [ mod.map(bits) for bits in raw_bit_list ]
         syms_mat = np.array(syms_list)
@@ -374,8 +473,8 @@ class Channel:
         if pm.ch_type == 'covar':
             self.gen_chan_covar_mat()
 
-    def __call__(self, syms):
-        return self.apply(syms)
+    def __call__(self, *args, **kwargs):
+        return self.apply(*args, **kwargs)
 
     def gen_chan_covar_mat(self):
         ''' generate covariance matrices for users '''
@@ -522,19 +621,19 @@ class Channel:
     '''
     noise generation functions
     '''
-    def gen_noiseless(self, N, N_rx):
-        n_tsr = np.zeros((N, N_rx, 1))
+    def gen_noiseless(self, N, N_rx, N_t):
+        n_tsr = np.zeros((N, N_rx, N_t))
         n_var_tsr = np.zeros((N,1,1))
         return n_tsr, n_var_tsr
 
-    def gen_fixed_var(self, N, N_rx):
+    def gen_fixed_var(self, N, N_rx, N_t):
         p = self.p
-        std_n_tsr = crandn(N, N_rx, 1)
+        std_n_tsr = crandn(N, N_rx, N_t)
         n_tsr = p.n_std * std_n_tsr
         n_var_tsr = p.n_var * np.ones((N,1,1))
         return n_tsr, n_var_tsr
 
-    def gen_rand_var(self, N, N_rx):
+    def gen_rand_var(self, N, N_rx, N_t):
         p = self.p
         if self.n_batch_fixed:
             snr_db = rnd.uniform(low=p.log_u_a, high=p.log_u_b)
@@ -544,23 +643,23 @@ class Channel:
         # common part
         n_std_tsr = 10**(-snr_tsr_db/20)
         n_var_tsr = n_std_tsr**2
-        std_n_tsr = crandn(N, N_rx, 1)
+        std_n_tsr = crandn(N, N_rx, N_t)
         n_tsr = n_std_tsr * std_n_tsr
         return n_tsr, n_var_tsr
 
-    def gen_fixed_snr(self, N, N_rx):
+    def gen_fixed_snr(self, N, N_rx, N_t):
         p = self.p
         n_std = 10**(-p.snr_db/20)
-        std_n_tsr = crandn(N, N_rx, 1)
+        std_n_tsr = crandn(N, N_rx, N_t)
         n_tsr = n_std * std_n_tsr
         snr_tsr_db = p.snr_db * np.ones((N,1,1))
         return n_tsr, snr_tsr_db
 
-    def gen_rand_snr(self, N, N_rx):
+    def gen_rand_snr(self, N, N_rx, N_t):
         p = self.p
         snr_tsr_db = rnd.randint(p.snr_lo, p.snr_hi+1, size=(N,1,1))
         n_std_tsr = 10**(-snr_tsr_db/20)
-        std_n_tsr = crandn(N, N_rx, 1)
+        std_n_tsr = crandn(N, N_rx, N_t)
         n_tsr = n_std_tsr * std_n_tsr
         return n_tsr, snr_tsr_db
 
@@ -573,17 +672,22 @@ class Channel:
         'noiseless' : gen_noiseless,
     }
 
-    def apply(self, sym_tsr):
+    def apply(self, sym_tsr, h_tsr=None):
+        '''
+        NOTE: pass h_tsr to reuse channel from training stage
+        '''
         p = self.p
         ch_gen = self.ch_gen
         n_gen = self.n_gen
 
         # sym_tsr.shape = (N, N_tx, 1)
         N = sym_tsr.shape[0]
+        N_t = sym_tsr.shape[2]
         # generate channel realizations
-        h_tsr = ch_gen(N, p.N_tx, p.N_rx)
+        if h_tsr is None:
+            h_tsr = ch_gen(N, p.N_tx, p.N_rx)
         # genrate (scaled) noise vectors
-        n_tsr, n_var_tsr = n_gen(N, p.N_rx)
+        n_tsr, n_var_tsr = n_gen(N, p.N_rx, N_t)
         # element-wise matrix multiplication via @
         y_tsr = h_tsr @ sym_tsr + n_tsr
 
@@ -857,6 +961,109 @@ class Demodulator:
 ################################################################################
 # symbol detector classes
 ################################################################################
+class ExtendedSymbolDetector:
+    '''
+    Symbol detector (perform recovery of x_hat)
+    Assume Linear Gaussian Channel, i.e.
+        y = Hx + n
+    Apply per symbol detection at the end
+
+    Inputs:
+        h_tsr:     channel realizations
+        n_var_tsr: noise variance of n
+    '''
+    def __init__(self, p, modulator=None, mode='mmse'):
+        self.p = p
+        self.mode = mode
+        self.est = partial(self.estimators[mode], self)
+        self.det = PerSymbolDetectorV2(p, modulator)
+        print(f'Symbol Estimator mode = {mode}')
+
+    def covar(self, w_mat, n_var):
+        ''' assume noise variance is n_var * I '''
+        n_var = n_var.item() # one item in array
+        A = np.matrix(w_mat)
+        Sigma = n_var * A @ A.H
+        return Sigma
+
+    def zf_est(self, y_tsr, h_tsr, n_var_tsr, d_inv_tsr):
+
+        h_pinv_tsr = la.pinv(h_tsr)
+        w_tsr = h_pinv_tsr
+        x_hat_tsr = w_tsr @ y_tsr
+
+        return x_hat_tsr, w_tsr
+
+    def mmse_est(self, y_tsr, h_tsr, n_var_tsr, d_inv_tsr):
+        '''
+        Dimensions:
+            y_tsr.shape     = (N, N_rx, 1)
+            h_tsr.shape     = (N, N_rx, N_tx)
+            n_var_tsr.shape = (N, 1, 1)
+        '''
+#        def mmse_weight(h_mat, n_var):
+#            ''' matrix.H is a property function '''
+#            A = np.matrix(h_mat)
+#            N_tx = h_mat.shape[1]
+#            I = n_var * np.identity(N_tx)
+#            return la.inv(A.H @ A + I) @ A.H
+#
+#        w_tsr = [ mmse_weight(h_mat, n_var) for (h_mat, n_var) in zip(h_tsr, n_var_tsr) ]
+
+        N_tx = h_tsr.shape[2]
+        I = np.identity(N_tx)
+        I = I[None,...] # for broadcasting
+        H = h_tsr
+        n_var = n_var_tsr
+
+        # implement vectorized version of (see mmse_weight() above)
+        # la.inv(H.H @ H + n_var * I) @ H.H
+        H_herm = np.conj(H).swapaxes(1,2)
+        w_tsr = la.inv(H_herm @ H + n_var * I) @ H_herm
+
+        x_hat_tsr = w_tsr @ y_tsr
+
+        return x_hat_tsr, w_tsr
+
+    def pwr_based_mmse_est(self, y_tsr, h_tsr, n_var_tsr, d_inv_tsr):
+        H = h_tsr
+        Di = d_inv_tsr
+        n_var = n_var_tsr
+
+        # implement vectorized version of
+        # la.inv(H.H @ H + n_var * D_inv) @ H.H
+        H_herm = np.conj(H).swapaxes(1,2)
+        w_tsr = la.inv(H_herm @ H + n_var * Di) @ H_herm
+
+        x_hat_tsr = w_tsr @ y_tsr
+
+        return x_hat_tsr, w_tsr
+
+    # estimators
+    estimators = {
+        'mmse' : mmse_est,
+        'zf'   : zf_est,
+        'pmmse': pwr_based_mmse_est,
+    }
+
+    def __call__(self, *args, **kwargs):
+        return self.detect(*args, **kwargs)
+
+    def estimate(self, y_tsr, h_tsr, n_var_tsr):
+        ''' calls estimator function '''
+        x_hat_tsr, w_tsr = self.est(y_tsr, h_tsr, n_var_tsr)
+        covar_tsr = [ self.covar(w_mat, n_var) for (w_mat, n_var) in zip(w_tsr, n_var_tsr) ]
+        return x_hat_tsr, covar_tsr
+
+    def detect(self, y_tsr, h_tsr, n_var_tsr, d_inv_tsr):
+        ''' hard decision '''
+        x_hat_tsr, w_tsr = self.est(y_tsr, h_tsr, n_var_tsr, d_inv_tsr)
+        syms_est = np.squeeze(x_hat_tsr)
+        bits_msd, syms_msd = self.det.compute_msd(x_hat_tsr)
+
+        return bits_msd, syms_msd, syms_est
+
+
 class SymbolEstimator:
     '''
     Symbol estimation (perform recovery of x_hat)
@@ -930,6 +1137,8 @@ class SymbolEstimator:
         x_hat_tsr, w_tsr = self.est(y_tsr, h_tsr, n_var_tsr)
         covar_tsr = [ self.covar(w_mat, n_var) for (w_mat, n_var) in zip(w_tsr, n_var_tsr) ]
         return x_hat_tsr, covar_tsr
+
+
 
 ################################################################################
 # demapper classes
@@ -1350,6 +1559,56 @@ class QAMModulator:
 
         return syms
 
+    # return PAM signal
+    def map_pam_bpsk(self, bit_vec):
+        return self.map_bpsk(bit_vec)
+
+    def map_pam_qpsk(self, bit_vec):
+        bit_vec = bit_vec.astype(float)
+        bv = np.reshape(bit_vec, (-1,1))
+        bv = bv[:,0]
+        syms = (2*bv - 1)
+        syms = syms.reshape(-1)
+        return syms
+
+    def map_pam_16qam(self, bit_vec):
+        M = self.M
+        lut = type(self).sym_luts[M]
+
+        bv = np.reshape(bit_vec, (-1,2))
+        bv = bv[:,0:2]
+        dv = bv2dec(bv)
+        syms = lut[dv]
+        syms = syms.reshape(-1)
+
+        return syms
+
+    def map_pam_64qam(self, bit_vec):
+        M = self.M
+        lut = type(self).sym_luts[M]
+
+        bv = np.reshape(bit_vec, (-1,3))
+        bv = bv[:,0:3]
+        dv = bv2dec(bv)
+        syms = lut[dv]
+        syms = syms.reshape(-1)
+
+        return syms
+
+    def map_pam_256qam(self, bit_vec):
+        M = self.M
+        lut = type(self).sym_luts[M]
+
+        bv = np.reshape(bit_vec, (-1,4))
+        bv = bv[:,0:4]
+        dv = bv2dec(bv)
+        syms = lut[dv]
+        syms = syms.reshape(-1)
+
+        return syms
+
+
+
     # define mapper table
     mappers = {
     #   M : mapper
@@ -1359,6 +1618,15 @@ class QAMModulator:
        16 : map_16qam,
        64 : map_64qam,
       256 : map_256qam,
+    }
+
+    pam_mappers = {
+    #   M : mapper
+        2 : map_pam_bpsk,
+        4 : map_pam_qpsk,
+       16 : map_pam_16qam,
+       64 : map_pam_64qam,
+      256 : map_pam_256qam,
     }
 
     # define scale table
@@ -1395,8 +1663,11 @@ class QAMModulator:
     def __init__(self, M):
         self.M = M
         self.nbps = np.log2(M).astype(int)
-        self.mapper = type(self).mappers[M]
         self.kmod = type(self).kmods[M]
+        self.mapper = type(self).mappers[M]
+
+        self.sqrt_M = np.sqrt(M).astype(int)
+        self.pam_mapper = type(self).pam_mappers[M]
 
     def map(self, bit_vec, normalize=True):
         '''
@@ -1427,6 +1698,22 @@ class QAMModulator:
         mapper = self.mapper
 
         x = np.arange(M)
+        xm = x.reshape(-1,1)
+        bm = dec2bv(xm)
+        bv = bm.reshape(-1,1)
+        syms = mapper(self,bv)
+        syms = syms.reshape(-1,1)
+
+        if normalize: syms = kmod * syms
+
+        return syms, bm
+
+    def get_const_real(self, normalize=True):
+        sqrt_M = self.sqrt_M
+        kmod = self.kmod
+        mapper = self.pam_mapper
+
+        x = np.arange(sqrt_M)
         xm = x.reshape(-1,1)
         bm = dec2bv(xm)
         bv = bm.reshape(-1,1)
