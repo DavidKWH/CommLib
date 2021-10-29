@@ -875,8 +875,8 @@ class DnnEstimator:
         print('DnnEstimator: loading model from file:', fname)
         self.model = tf.saved_model.load(fname)
         # instantiate per symbol detector
-        from .core import PerSymbolDetector
-        self.det = PerSymbolDetector(p)
+        from .core import PerSymbolDetectorV2
+        self.det = PerSymbolDetectorV2(p)
         # save options
         if augment:
             self.est = BussgangEstimator(p)
@@ -930,6 +930,9 @@ class DnnEstimator:
         # return to 2d
         sym_est = np.squeeze(sym_est)
 
+        #if self.augment:
+        #    return bits_msd, syms_msd, sym_est, syms_bmmse
+
         return bits_msd, syms_msd, sym_est
 
 
@@ -945,8 +948,8 @@ class ModelBasedDnnEstimator:
         print('ModelBasedDnnEstimator: loading model from file:', fname)
         self.model = tf.saved_model.load(fname)
         # instantiate per symbol detector
-        from .core import PerSymbolDetector
-        self.det = PerSymbolDetector(p)
+        from .core import PerSymbolDetectorV2
+        self.det = PerSymbolDetectorV2(p)
 
 
     def __call__(self, *args, **kwargs):
