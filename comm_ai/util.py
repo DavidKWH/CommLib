@@ -165,3 +165,80 @@ class RawBitErrorRate:
         total = cnt * N
         return errs / total
 
+class NMSE:
+    '''
+    Compute NMSE metric
+    '''
+    def __init__(self, shape):
+        # shape = [N, N1, N2]
+        self.cse = 0
+        self.cnt = 0
+        self.shape = shape
+        self.N = np.prod(shape)
+
+    def __call__(self, *args, **kwargs):
+        self.update_state(*args, **kwargs)
+
+    def update_state(self, true, pred):
+        assert np.array_equal(pred.shape, self.shape)
+        assert(true.dtype in [np.complex, np.complex64])
+        assert(pred.dtype in [np.complex, np.complex64])
+
+        err = true - pred
+        sqr_err = err.real**2 + err.imag**2
+        sqr_err_total = np.sum(sqr_err)
+
+        self.cnt += 1
+        self.cse += sqr_err_total
+
+    def reset_states(self):
+        self.cse = 0
+        self.cnt = 0
+
+    def result(self):
+        cnt = self.cnt
+        cse = self.cse
+        N = self.N
+
+        total = cnt * N
+        return cse / total
+
+class NMSE_real:
+    '''
+    Compute NMSE metric
+    '''
+    def __init__(self, shape):
+        # shape = [N, N1, N2]
+        self.cse = 0
+        self.cnt = 0
+        self.shape = shape
+        self.N = np.prod(shape)
+
+    def __call__(self, *args, **kwargs):
+        self.update_state(*args, **kwargs)
+
+    def update_state(self, true, pred):
+        assert np.array_equal(pred.shape, self.shape)
+        #assert(true.dtype == np.complex)
+        #assert(pred.dtype == np.complex)
+
+        err = true - pred
+        sqr_err = err**2
+        sqr_err_total = np.sum(sqr_err)
+
+        self.cnt += 1
+        self.cse += sqr_err_total
+        #print(f"{self.cnt}: cse={self.cse}")
+
+    def reset_states(self):
+        self.cse = 0
+        self.cnt = 0
+
+    def result(self):
+        cnt = self.cnt
+        cse = self.cse
+        N = self.N
+
+        total = cnt * N
+        return cse / total
+
