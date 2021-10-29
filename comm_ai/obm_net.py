@@ -18,14 +18,39 @@ from functools import partial
 #from .util import DumpFullTensor
 
 import tensorflow_probability as tfp
-tfd = tfp.distributions
-
-dist = tfd.Normal(loc=0., scale=1.)
+norm = tfp.distributions.Normal(loc=0., scale=1.)
+laplace = tfp.distributions.Laplace(loc=0., scale=1.)
 
 def rhazard(x):
-    out = tf.exp( dist.log_prob(x) - dist.log_cdf(x) )
+    out = tf.exp( norm.log_prob(x) - norm.log_cdf(x) )
     return out
 
+def laplace_rhazard(x):
+    out = tf.exp( laplace.log_prob(x) - laplace.log_cdf(x) )
+    return out
+
+class NormalizeLayer(Layer):
+    '''
+    Implements Normalize layer
+    '''
+    def __init__(self, K):
+        super().__init__()
+        self.K = K
+        self.sqrt_K = tf.sqrt(K)
+
+    def build(self, input_shape):
+        pass
+
+    def call(self, inputs, training=False):
+        # dimensions
+        # x.shape = [Nb, Nx]
+        x = inputs
+
+        # normalize output
+        x_mag = tf.norm(x, axis=1, keepdims=True)
+        x = self.sqrt_K / x_mag * x
+
+        return x
 
 class OBMNetLayer(Layer):
     '''
@@ -53,6 +78,7 @@ class OBMNetLayer(Layer):
             OBMNetLayer.beta = self.add_weight(name='beta', # needed for tf.saved_model.save()
                                      shape=(),
                                      initializer=self.initializer,
+                                     #constraint=NonNeg(),
                                      trainable=True)
 
         # object level
@@ -77,6 +103,8 @@ class OBMNetLayer(Layer):
         x = tf.matmul(x, -G, transpose_b=True)
         s = self.sigmoid(self.beta * x)
         #s = rhazard(self.beta * x)
+        #s = laplace_rhazard(self.beta * x)
+
         # compute G^T s
         x = tf.matmul(s, G)
         x = tf.squeeze(x, axis=1)
@@ -99,7 +127,6 @@ class OBMNet():
         self.n_in = n_in = x_dim
         self.n_out = n_out = y_dim
         K = tf.convert_to_tensor(x_dim // 2, dtype=tf.float32)
-        self.sqrt_K = tf.sqrt(K)
 
         obm_net_layer = partial(OBMNetLayer, kernel_initializer=kernel_initializer)
 
@@ -113,7 +140,7 @@ class OBMNet():
             layers.append(obm_net_layer(n_in, n_out))
 
         self.layers = layers
-
+        self.norm_layer = NormalizeLayer(K)
 
     def build(self):
         '''
@@ -133,8 +160,7 @@ class OBMNet():
             l_in = [x_out, G]
 
         # normalize output
-        x_out_mag = tf.norm(x_out, axis=1, keepdims=True)
-        x_out = self.sqrt_K / x_out_mag * x_out
+        x_out = self.norm_layer(x_out)
 
         #return Model(inputs=[y, H],
         return Model(inputs=[x_in, y, H],
