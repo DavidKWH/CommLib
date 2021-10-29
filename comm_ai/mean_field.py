@@ -13,7 +13,7 @@ from .core import reals2cplx
 
 from .core import QAMModulator
 #from .core import PerSymbolDetector
-from .core import PerSymbolDetectorV2
+#from .core import PerSymbolDetectorV2
 
 from scipy.stats import norm
 from scipy.special import logsumexp
