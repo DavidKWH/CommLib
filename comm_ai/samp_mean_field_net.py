@@ -679,6 +679,7 @@ class ParallelMFSNetLayerS1(Layer):
 
         # compute sqrt_2rho
         n_var_clipped = tf.maximum(0.01, n_var)
+        #n_var_clipped = tf.maximum(0.03, n_var)
         rho = 1./n_var_clipped
         sqrt_2rho = tf.sqrt(2.*rho)
 
@@ -945,7 +946,6 @@ class AlphaFunction(Layer):
         pass
 
     def call(self, inputs, training=False):
-        #tf.print('Alpha:training', training)
         n_var = inputs
         n_var_clipped = tf.minimum(1.0, n_var)
         n_var_comp = 1.0 - n_var_clipped
@@ -966,6 +966,7 @@ class HFunction(Layer):
         super().__init__()
 
         alpha_units = 8
+        #alpha_units = 16
         self.alpha_fcn = AlphaFunction(alpha_units)
 
         activation = 'relu'
@@ -1048,14 +1049,14 @@ class HFunction(Layer):
         #log_qi_out = x
 
         # augmented MLP (for learning the residue)
-        x = self.in_layer(log_qi_diff)
-        x = self.hidden_layer(x)
-        x = self.out_layer(x)
-        log_qi_out = log_qi_diff + x
+        #x = self.in_layer(log_qi_diff)
+        #x = self.hidden_layer(x)
+        #x = self.out_layer(x)
+        #log_qi_out = log_qi_diff + x
 
         # single residual layer
         #log_qi_out = self.res_fcn(log_qi_diff)
-        #log_qi_out = log_qi_diff
+        log_qi_out = log_qi_diff
 
         log_qi_out = tf.reshape(log_qi_out, shape)
 
@@ -1103,6 +1104,7 @@ class ParallelMFSNetLayerS2(Layer):
 
         # compute sqrt_2rho
         n_var_clipped = tf.maximum(0.01, n_var)
+        #n_var_clipped = tf.maximum(0.03, n_var)
         rho = 1./n_var_clipped
         sqrt_2rho = tf.sqrt(2.*rho)
 
@@ -1682,8 +1684,8 @@ class ParallelMFSNetLayerS3(Layer):
             # compute learned function
             log_qi_update = tf.stack(log_qi_seq, axis=1)
             log_qi_diff = log_qi - log_qi_update
-            alpha = 0.99
-            log_qi_new = log_qi_update + alpha * log_qi_diff
+            #alpha = 0.99
+            #log_qi_new = log_qi_update + alpha * log_qi_diff
             #log_qi_new = log_qi_update
 
 
@@ -1693,13 +1695,13 @@ class ParallelMFSNetLayerS3(Layer):
             #alpha = 0.01
             #log_qi_new = log_qi + alpha * log_qi_diff
 
-            #state_new = self.hs_fcn([log_qi_diff, state])
-            #corr_term = self.hm_fcn([log_qi_diff, state_new])
+            state_new = self.hs_fcn([log_qi_diff, state])
+            corr_term = self.hm_fcn([log_qi_diff, state_new])
 
             #log_qi_new = log_qi + corr_term
-            #log_qi_new = log_qi_update + corr_term
+            log_qi_new = log_qi_update + corr_term
             #log_qi_new = log_qi_update
-            state_new = []
+            #state_new = []
 
             max_log_qi = tf.reduce_max(log_qi_new, axis=-1, keepdims=True)
             log_qi_shifted = log_qi_new - tf.stop_gradient(max_log_qi)
@@ -1769,19 +1771,24 @@ class ParallelMFSNetS3():
 
         n_var_ex = n_var[:,tf.newaxis]
         n_var_clipped = tf.minimum(1.0, n_var_ex)
-        #state = self.init_fcn(n_var_ex)
-        state = []
+        state = self.init_fcn(n_var_ex)
+        #state = []
 
         l_in = [log_qi_in, G, r2rho, n_var, state]
+#        l_out = []
         for layer in self.layers:
             log_qi_out, state_new = layer(l_in)
             l_in = [log_qi_out, G, r2rho, n_var, state_new]
+#            l_out.append(log_qi_out)
+
+#        log_qi_all = tf.stack(l_out)
 
         # return log_qi
         # loss function may require this instead of qi
 
         #return Model(inputs=[y, H],
         return Model(inputs=[log_qi_in, y, H, r2rho, n_var],
-                     outputs=log_qi_out , name='ParallelMFSNetS3')
+                     #outputs=[log_qi_out, log_qi_all], name='ParallelMFSNetS3')
+                     outputs=log_qi_out, name='ParallelMFSNetS3')
 
 
